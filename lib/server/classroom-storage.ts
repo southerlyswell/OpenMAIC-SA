@@ -2,6 +2,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import type { NextRequest } from 'next/server';
 import type { Scene, Stage } from '@/lib/types/stage';
+import { getDB } from '@/lib/db';
 
 export const CLASSROOMS_DIR = path.join(process.cwd(), 'data', 'classrooms');
 export const CLASSROOM_JOBS_DIR = path.join(process.cwd(), 'data', 'classroom-jobs');
@@ -76,6 +77,39 @@ export async function persistClassroom(
   await ensureClassroomsDir();
   const filePath = path.join(CLASSROOMS_DIR, `${data.id}.json`);
   await writeJsonFileAtomic(filePath, classroomData);
+
+  // Also persist metadata to SQLite for curriculum-aware browsing
+  try {
+    const db = getDB();
+    const stmt = db.prepare(
+      `INSERT OR REPLACE INTO lessons (id, title, grade, subject, language, scene_types, duration_min, classroom_json_path, created_at, updated_at, status, version)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+
+    const sceneTypes = data.scenes.map(s => s.type);
+    const durationGuess = Math.max(1, Math.round(data.scenes.length * 5)); // ~5 min per scene
+
+    stmt.run(
+      data.id,
+      data.stage.name || 'Untitled Lesson',
+      (data.stage as any).grade || 0,
+      (data.stage as any).subject || 'General',
+      data.stage.languageDirective || 'en',
+      JSON.stringify(sceneTypes),
+      durationGuess,
+      path.join(CLASSROOMS_DIR, `${data.id}.json`),
+      data.stage.createdAt
+        ? new Date(data.stage.createdAt).toISOString()
+        : new Date().toISOString(),
+      data.stage.updatedAt
+        ? new Date(data.stage.updatedAt).toISOString()
+        : new Date().toISOString(),
+      'published',
+      1
+    );
+  } catch (dbErr) {
+    console.error('Failed to write classroom metadata to SQLite:', dbErr);
+  }
 
   return {
     ...classroomData,

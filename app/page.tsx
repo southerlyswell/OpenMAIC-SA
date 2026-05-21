@@ -178,9 +178,23 @@ function HomePage() {
 
   const loadClassrooms = async () => {
     try {
+      // Try server-side course list first (SQLite)
+      try {
+        const res = await fetch('/api/courses');
+        if (res.ok) {
+          const data = await res.json();
+          if (data.courses && data.courses.length > 0) {
+            setClassrooms(data.courses);
+            return;
+          }
+        }
+      } catch (_e) {
+        // Fall through to IndexedDB
+      }
+
+      // Fallback: load from IndexedDB
       const list = await listStages();
       setClassrooms(list);
-      // Load first slide thumbnails
       if (list.length > 0) {
         const slides = await getFirstSlideByStages(list.map((c) => c.id));
         replaceThumbnails(slides);
