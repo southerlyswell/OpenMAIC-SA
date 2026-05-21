@@ -50,6 +50,11 @@ export interface StageRecord {
   agentIds?: string[]; // Agent IDs selected at creation time
   videoManifest?: VideoManifest; // Generated video request manifest; non-indexed
   interactiveMode?: boolean; // Interactive Mode flag; non-indexed
+  // Curriculum segmentation fields (optional for backward compatibility)
+  gradeId?: string;   // FK -> curriculum grade entry id
+  subjectId?: string; // FK -> curriculum subject entry id
+  weekId?: string;    // FK -> curriculum week entry id
+  lessonId?: string;  // FK -> curriculum lesson entry id
 }
 
 /**
@@ -194,7 +199,7 @@ export function mediaFileKey(stageId: string, elementId: string): string {
 // ==================== Database Definition ====================
 
 const DATABASE_NAME = 'MAIC-Database';
-const _DATABASE_VERSION = 10;
+const _DATABASE_VERSION = 11;
 
 /**
  * MAIC Database Instance
@@ -378,6 +383,21 @@ class MAICDatabase extends Dexie {
       generatedAgents: 'id, stageId',
       voiceProfiles: 'id, providerId, kind, updatedAt',
     });
+
+    // Version 11: Add compound indexes for curriculum segmentation (grade/subject/week/lesson)
+    this.version(11).stores({
+      stages: 'id, updatedAt, gradeId, subjectId, weekId, lessonId, [gradeId+subjectId], [gradeId+subjectId+weekId], [gradeId+subjectId+weekId+lessonId]',
+      scenes: 'id, stageId, order, [stageId+order]',
+      audioFiles: 'id, createdAt',
+      imageFiles: 'id, createdAt',
+      snapshots: '++id',
+      chatSessions: 'id, stageId, [stageId+createdAt]',
+      playbackState: 'stageId',
+      stageOutlines: 'stageId',
+      mediaFiles: 'id, stageId, [stageId+type]',
+      generatedAgents: 'id, stageId',
+      voiceProfiles: 'id, providerId, kind, updatedAt',
+    });
   }
 }
 
@@ -393,10 +413,31 @@ export const db = new MAICDatabase();
 export async function initDatabase(): Promise<void> {
   try {
     await db.open();
-    // Request persistent storage to prevent browser from evicting IndexedDB
-    // under storage pressure (large media blobs can trigger LRU cleanup)
-    void navigator.storage?.persist?.();
     log.info('Database initialized successfully');
+
+    // Request persistent storage to prevent the browser from evicting
+    // IndexedDB data (especially Chrome, which is aggressive about LRU
+    // cleanup under storage pressure from large media blobs).
+    if (typeof navigator !== 'undefined' && navigator.storage?.persist) {
+      try {
+        // Check if storage is already persisted
+        const isPersisted = await navigator.storage.persisted();
+        if (!isPersisted) {
+          const granted = await navigator.storage.persist();
+          log.info(`Persistent storage request: ${granted ? 'granted' : 'denied'}`);
+          if (!granted) {
+            log.warn(
+              'Persistent storage was denied. IndexedDB data may be evicted ' +
+                'by the browser under storage pressure (common in Chrome).',
+            );
+          }
+        } else {
+          log.info('Storage already in persistent mode');
+        }
+      } catch (persistErr) {
+        log.warn('Failed to request persistent storage:', persistErr);
+      }
+    }
   } catch (error) {
     log.error('Failed to initialize database:', error);
     throw error;
