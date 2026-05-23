@@ -37,6 +37,7 @@ export function CurriculumMap({ onGenerate }: {
   onGenerate?: (phase: string, grade: number, subject: string, topicIds: string[]) => void;
 }) {
   const [phases, setPhases] = useState<CurriculumPhase[]>([]);
+  const [selectedPhaseId, setSelectedPhaseId] = useState<string | null>(null);
   const [expandedSubjects, setExpandedSubjects] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
 
@@ -49,7 +50,11 @@ export function CurriculumMap({ onGenerate }: {
       const res = await fetch('/api/curriculum');
       if (res.ok) {
         const data = await res.json();
-        setPhases(data.phases || []);
+        const loaded = data.phases || [];
+        setPhases(loaded);
+        if (loaded.length > 0 && !selectedPhaseId) {
+          setSelectedPhaseId(loaded[0].id);
+        }
       }
     } catch (err) {
       log.error('Failed to fetch curriculum:', err);
@@ -75,32 +80,59 @@ export function CurriculumMap({ onGenerate }: {
     );
   }
 
+  const selectedPhase = phases.find((p) => p.id === selectedPhaseId);
   const totalCourses = phases.reduce((a, p) => a + p.subjects.reduce((b, s) => b + s.courseCount, 0), 0);
   const totalSubjects = phases.reduce((a, p) => a + p.subjects.length, 0);
 
   return (
     <div>
+      {/* Phase tabs */}
+      <div className="flex flex-wrap gap-1.5 mb-4">
+        {phases.map((phase) => {
+          const phaseCourses = phase.subjects.reduce((a, s) => a + s.courseCount, 0);
+          const isActive = selectedPhaseId === phase.id;
+          return (
+            <button
+              key={phase.id}
+              onClick={() => { setSelectedPhaseId(phase.id); setExpandedSubjects(new Set()); }}
+              className={cn(
+                'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all border',
+                isActive
+                  ? 'bg-primary/10 border-primary/30 text-primary'
+                  : 'bg-card border-border/50 text-muted-foreground hover:border-border hover:text-foreground'
+              )}
+            >
+              <Layers className="size-3" />
+              {phase.name}
+              <span className={cn(
+                'text-[10px]',
+                isActive ? 'text-primary/60' : 'text-muted-foreground/40'
+              )}>
+                {phaseCourses}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
       {/* Summary bar */}
       <div className="flex items-center gap-4 mb-4 text-xs text-muted-foreground/60 px-1">
         <span>{totalCourses} courses</span>
         <span className="w-px h-3 bg-border/40" />
-        <span>{totalSubjects} subjects</span>
-        <span className="w-px h-3 bg-border/40" />
-        <span>{phases.length} phases</span>
+        <span>{totalSubjects} subjects across {phases.length} phases</span>
+        {selectedPhase && (
+          <>
+            <span className="w-px h-3 bg-border/40" />
+            <span className="text-primary/60">{selectedPhase.name}: Gr {selectedPhase.grades}</span>
+          </>
+        )}
       </div>
 
-      {phases.map((phase) => (
-        <div key={phase.id} className="mb-6">
-          {/* Phase header */}
-          <div className="flex items-center gap-2 mb-3">
-            <Layers className="size-4 text-muted-foreground/40" />
-            <span className="text-sm font-semibold text-foreground/80">{phase.name}</span>
-            <span className="text-xs text-muted-foreground/40">Gr {phase.grades}</span>
-          </div>
-
-          {/* Subject grid */}
+      {/* Selected phase content */}
+      {selectedPhase && (
+        <div>
           <div className="grid grid-cols-2 gap-2.5">
-            {phase.subjects.map((subject) => {
+            {selectedPhase.subjects.map((subject) => {
               const isExpanded = expandedSubjects.has(subject.id);
               const hasTopics = subject.topics.length > 0;
               return (
@@ -204,7 +236,7 @@ export function CurriculumMap({ onGenerate }: {
             })}
           </div>
         </div>
-      ))}
+      )}
 
       {phases.length === 0 && (
         <div className="text-center py-8 text-sm text-muted-foreground/40">
