@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo, useRef, useDeferredValue } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'motion/react';
 import {
@@ -12,7 +12,6 @@ import {
   ImagePlus,
   Pencil,
   Trash2,
-  Search,
   Settings,
   Sun,
   Moon,
@@ -21,13 +20,11 @@ import {
   Upload,
   Sparkles,
   Atom,
-  X,
 } from 'lucide-react';
 import { useI18n } from '@/lib/hooks/use-i18n';
 import { LanguageSwitcher } from '@/components/language-switcher';
 import { createLogger } from '@/lib/logger';
 import { Button } from '@/components/ui/button';
-import { InputGroup, InputGroupInput, InputGroupButton } from '@/components/ui/input-group';
 import { Textarea as UITextarea } from '@/components/ui/textarea';
 import { cn } from '@/lib/utils';
 import { SettingsDialog } from '@/components/settings';
@@ -56,6 +53,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { useDraftCache } from '@/lib/hooks/use-draft-cache';
 import { SpeechButton } from '@/components/audio/speech-button';
 import { useImportClassroom } from '@/lib/import/use-import-classroom';
+import { CurriculumBrowser } from '@/components/curriculum-browser';
 
 const log = createLogger('Home');
 
@@ -149,10 +147,16 @@ function HomePage() {
   const [classrooms, setClassrooms] = useState<StageListItem[]>([]);
   const [thumbnails, setThumbnails] = useState<Record<string, Slide>>({});
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-  const searchInputRef = useRef<HTMLInputElement>(null);
-  const searchButtonRef = useRef<HTMLButtonElement>(null);
+  const [creatorMode, setCreatorMode] = useState(false);
+  const [curriculumFilter, setCurriculumFilter] = useState<{ grade?: number; subject?: string; search?: string; sort?: string } | null>(null);
+  useEffect(() => {
+    const check = () => {
+      try { setCreatorMode(localStorage.getItem('maic-creator-mode') === 'true'); } catch {}
+    };
+    check();
+    const id = setInterval(check, 1000);
+    return () => clearInterval(id);
+  }, []);
   const toolbarRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const thumbnailsRef = useRef<Record<string, Slide>>({});
@@ -254,16 +258,37 @@ function HomePage() {
     }
   };
 
-  const deferredSearchQuery = useDeferredValue(searchQuery);
   const filteredClassrooms = useMemo(() => {
-    const q = deferredSearchQuery.trim().toLowerCase();
-    if (!q) return classrooms;
-    return classrooms.filter((c) => {
-      const name = c.name?.toLowerCase() ?? '';
-      const desc = c.description?.toLowerCase() ?? '';
-      return name.includes(q) || desc.includes(q);
-    });
-  }, [classrooms, deferredSearchQuery]);
+    let result = classrooms;
+    
+    // Filter by curriculum selection (from CurriculumBrowser)
+    if (curriculumFilter) {
+      result = result.filter((c) => {
+        const matchGrade = curriculumFilter.grade != null ? c.grade === curriculumFilter.grade : true;
+        const matchSubject = curriculumFilter.subject ? c.subject === curriculumFilter.subject : true;
+        return matchGrade && matchSubject;
+      });
+
+      // Search from CurriculumBrowser
+      const q = (curriculumFilter.search || '').trim().toLowerCase();
+      if (q) {
+        result = result.filter((c) => {
+          const name = c.name?.toLowerCase() ?? '';
+          const desc = c.description?.toLowerCase() ?? '';
+          return name.includes(q) || desc.includes(q);
+        });
+      }
+
+      // Sort from CurriculumBrowser
+      if (curriculumFilter.sort === 'newest') {
+        result = [...result].sort((a, b) => b.updatedAt - a.updatedAt);
+      } else if (curriculumFilter.sort === 'az') {
+        result = [...result].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+      }
+    }
+    
+    return result;
+  }, [classrooms, curriculumFilter]);
 
   const updateForm = <K extends keyof FormState>(field: K, value: FormState[K]) => {
     setForm((prev) => ({ ...prev, [field]: value }));
@@ -509,7 +534,8 @@ function HomePage() {
           {t('home.slogan')}
         </motion.p>
 
-        {/* ── Unified input area ── */}
+        {/* ── Creator-only: Unified input area ── */}
+        {creatorMode && (
         <motion.div
           initial={{ opacity: 0, scale: 0.97 }}
           animate={{ opacity: 1, scale: 1 }}
@@ -612,6 +638,10 @@ function HomePage() {
             </div>
           </div>
         </motion.div>
+        )}
+
+        {/* ── Curriculum browser ── */}
+        <CurriculumBrowser onFilterChange={setCurriculumFilter} />
 
         {/* ── Error ── */}
         <AnimatePresence>
@@ -627,8 +657,8 @@ function HomePage() {
           )}
         </AnimatePresence>
 
-        {/* ── Import button (empty state) ── */}
-        {classrooms.length === 0 && (
+        {/* ── Import button (empty state) — creator only ── */}
+        {creatorMode && classrooms.length === 0 && (
           <button
             onClick={triggerFileSelect}
             disabled={importing}
@@ -641,6 +671,21 @@ function HomePage() {
       </motion.div>
 
       {/* ═══ Recent classrooms — collapsible ═══ */}
+      {curriculumFilter && filteredClassrooms.length > 0 && (
+        <div className="relative z-10 mt-4 flex items-center gap-2">
+          <span className="text-xs text-muted-foreground/60">
+            Showing: {curriculumFilter.subject || ''}
+            {curriculumFilter.grade ? ` (Grade ${curriculumFilter.grade})` : ''}
+            — {filteredClassrooms.length} course{filteredClassrooms.length !== 1 ? 's' : ''}
+          </span>
+          <button
+            onClick={() => setCurriculumFilter(null)}
+            className="text-[10px] text-muted-foreground/40 hover:text-foreground/80 transition-colors"
+          >
+            Clear filter
+          </button>
+        </div>
+      )}
       {classrooms.length > 0 && (
         <motion.div
           initial={{ opacity: 0 }}
@@ -667,88 +712,6 @@ function HomePage() {
                 </motion.div>
               </button>
 
-              {/* Search toggle — icon that expands into an input in place */}
-              <AnimatePresence initial={false}>
-                {!searchOpen ? (
-                  <motion.button
-                    key="search-icon"
-                    ref={searchButtonRef}
-                    type="button"
-                    aria-label={t('classroom.searchAriaLabel')}
-                    onClick={() => {
-                      setSearchOpen(true);
-                      if (!recentOpen) persistRecentOpen(true);
-                      requestAnimationFrame(() => searchInputRef.current?.focus());
-                    }}
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    transition={{ duration: 0.12, ease: 'easeOut' }}
-                    className="flex items-center justify-center size-6 rounded-full text-muted-foreground/50 hover:text-foreground/70 hover:bg-muted/50 transition-colors cursor-pointer"
-                  >
-                    <Search className="size-3.5" />
-                  </motion.button>
-                ) : (
-                  <motion.div
-                    key="search-input"
-                    initial={{ opacity: 0, width: 0 }}
-                    animate={{ opacity: 1, width: 200 }}
-                    exit={{ opacity: 0, width: 0 }}
-                    transition={{ duration: 0.18, ease: [0.25, 0.1, 0.25, 1] }}
-                    className="overflow-hidden"
-                  >
-                    <InputGroup
-                      className={cn(
-                        'h-7 text-[12px] rounded-full bg-muted/40 border-transparent shadow-none',
-                        'transition-colors',
-                        'hover:bg-muted/60',
-                        'has-[[data-slot=input-group-control]:focus-visible]:bg-muted/60',
-                        'has-[[data-slot=input-group-control]:focus-visible]:border-transparent',
-                        'has-[[data-slot=input-group-control]:focus-visible]:ring-0',
-                      )}
-                    >
-                      <InputGroupInput
-                        ref={searchInputRef}
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Escape') {
-                            e.preventDefault();
-                            if (searchQuery) {
-                              setSearchQuery('');
-                            } else {
-                              setSearchOpen(false);
-                              requestAnimationFrame(() => searchButtonRef.current?.focus());
-                            }
-                          }
-                        }}
-                        onBlur={() => {
-                          if (!searchQuery) {
-                            setSearchOpen(false);
-                          }
-                        }}
-                        placeholder={t('classroom.searchPlaceholder')}
-                        aria-label={t('classroom.searchAriaLabel')}
-                        className="h-7 pl-3 placeholder:text-muted-foreground/50"
-                      />
-                      {searchQuery && (
-                        <InputGroupButton
-                          size="icon-xs"
-                          aria-label={t('classroom.clearSearch')}
-                          onMouseDown={(e) => e.preventDefault()}
-                          onClick={() => {
-                            setSearchQuery('');
-                            searchInputRef.current?.focus();
-                          }}
-                        >
-                          <X />
-                        </InputGroupButton>
-                      )}
-                    </InputGroup>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-
               <button
                 onClick={triggerFileSelect}
                 disabled={importing}
@@ -773,7 +736,7 @@ function HomePage() {
                 transition={{ duration: 0.4, ease: [0.25, 0.1, 0.25, 1] }}
                 className="w-full overflow-hidden"
               >
-                {searchQuery.trim() && filteredClassrooms.length === 0 ? (
+                {curriculumFilter?.search && curriculumFilter.search.trim() && filteredClassrooms.length === 0 ? (
                   <div className="pt-8 pb-2 text-center text-[13px] text-muted-foreground/60">
                     {t('classroom.searchEmpty')}
                   </div>
@@ -1276,6 +1239,12 @@ function ClassroomCard({
 
       {/* Info — outside the thumbnail */}
       <div className="mt-2.5 px-1 flex items-center gap-2">
+        {/* Curriculum badge — shows grade/subject when available */}
+        {(classroom as any).grade > 0 && (
+          <span className="shrink-0 inline-flex items-center rounded-full bg-emerald-100 dark:bg-emerald-900/30 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
+            Gr {(classroom as any).grade} · {(classroom as any).subject || ''}
+          </span>
+        )}
         <span className="shrink-0 inline-flex items-center rounded-full bg-violet-100 dark:bg-violet-900/30 px-2 py-0.5 text-[11px] font-medium text-violet-600 dark:text-violet-400">
           {classroom.sceneCount} {t('classroom.slides')} · {formatDate(classroom.updatedAt)}
         </span>
