@@ -671,21 +671,6 @@ function HomePage() {
       </motion.div>
 
       {/* ═══ Recent classrooms — collapsible ═══ */}
-      {curriculumFilter && filteredClassrooms.length > 0 && (
-        <div className="relative z-10 mt-4 flex items-center gap-2">
-          <span className="text-xs text-muted-foreground/60">
-            Showing: {curriculumFilter.subject || ''}
-            {curriculumFilter.grade ? ` (Grade ${curriculumFilter.grade})` : ''}
-            — {filteredClassrooms.length} course{filteredClassrooms.length !== 1 ? 's' : ''}
-          </span>
-          <button
-            onClick={() => setCurriculumFilter(null)}
-            className="text-[10px] text-muted-foreground/40 hover:text-foreground/80 transition-colors"
-          >
-            Clear filter
-          </button>
-        </div>
-      )}
       {classrooms.length > 0 && (
         <motion.div
           initial={{ opacity: 0 }}

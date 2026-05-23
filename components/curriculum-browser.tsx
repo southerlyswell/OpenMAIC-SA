@@ -271,128 +271,89 @@ export function CurriculumBrowser({ onFilterChange }: {
           </AnimatePresence>
         </div>
 
-        {/* Subject dropdown (secondary access) */}
-        <div className="flex-1 relative" ref={subjectDropdownRef}>
-          <button
-            onClick={() => { setSubjectOpen(!subjectOpen); setPhaseOpen(false); }}
-            disabled={!selectedPhase}
-            className={cn(
-              'w-full h-10 px-4 rounded-xl border text-sm text-left flex items-center gap-2 transition-all',
-              !selectedPhase && 'opacity-40 cursor-not-allowed',
-              selectedSubject
-                ? 'border-primary/30 bg-primary/5 text-primary'
-                : 'border-border/50 bg-card text-muted-foreground hover:border-border'
-            )}
-          >
-            <BookOpen className="size-3.5 shrink-0" />
-            <span className="flex-1 truncate">
-              {selectedSubject || 'All Subjects'}
-            </span>
-            <svg className="size-3.5 shrink-0 opacity-50" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m6 9 6 6 6-6"/></svg>
-          </button>
+        {/* Subject dropdown (secondary access) — with reset button */}
+        <div className="flex-1 relative flex items-center gap-2">
+          <div className="flex-1 relative" ref={subjectDropdownRef}>
+            <button
+              onClick={() => { setSubjectOpen(!subjectOpen); setPhaseOpen(false); }}
+              disabled={!selectedPhase}
+              className={cn(
+                'w-full h-10 px-4 rounded-xl border text-sm text-left flex items-center gap-2 transition-all',
+                !selectedPhase && 'opacity-40 cursor-not-allowed',
+                selectedSubject
+                  ? 'border-primary/30 bg-primary/5 text-primary'
+                  : 'border-border/50 bg-card text-muted-foreground hover:border-border'
+              )}
+            >
+              <BookOpen className="size-3.5 shrink-0" />
+              <span className="flex-1 truncate">
+                {selectedSubject || 'All Subjects'}
+              </span>
+              <svg className="size-3.5 shrink-0 opacity-50" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m6 9 6 6 6-6"/></svg>
+            </button>
 
-          <AnimatePresence>
-            {subjectOpen && selectedPhase && (
-              <motion.div
-                initial={{ opacity: 0, y: -4, scale: 0.97 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: -4, scale: 0.97 }}
-                transition={{ duration: 0.12 }}
-                className="absolute top-full mt-1 right-0 w-full z-50 bg-card border border-border/50 rounded-xl shadow-lg overflow-hidden max-h-64 overflow-y-auto"
-              >
-                {allPhaseSubjects.map((subject) => (
-                  <button
-                    key={subject.id}
-                    onClick={() => {
-                      selectSubject(subject.name);
-                      setSubjectOpen(false);
-                    }}
-                    className={cn(
-                      'w-full px-3 py-2 text-sm text-left hover:bg-muted/40 transition-colors flex items-center gap-2',
-                      selectedSubject === subject.name && 'bg-primary/5 text-primary'
-                    )}
-                  >
-                    <BookOpen className="size-3.5 text-muted-foreground/40" />
-                    {subject.name}
-                  </button>
-                ))}
-                {selectedSubject && (
-                  <button
-                    onClick={() => {
-                      setSelectedSubject(null);
-                      setSubjectOpen(false);
-                    }}
-                    className="w-full px-3 py-2 text-xs text-muted-foreground/50 hover:text-foreground/70 border-t border-border/30 transition-colors"
-                  >
-                    Clear subject filter
-                  </button>
-                )}
-              </motion.div>
-            )}
-          </AnimatePresence>
+            <AnimatePresence>
+              {subjectOpen && selectedPhase && (
+                <motion.div
+                  initial={{ opacity: 0, y: -4, scale: 0.97 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: -4, scale: 0.97 }}
+                  transition={{ duration: 0.12 }}
+                  className="absolute top-full mt-1 left-0 right-0 z-50 bg-card border border-border/50 rounded-xl shadow-lg overflow-hidden max-h-64 overflow-y-auto"
+                >
+                  {allPhaseSubjects.map((subject) => (
+                    <button
+                      key={subject.id}
+                      onClick={() => {
+                        selectSubject(subject.name);
+                        setSubjectOpen(false);
+                      }}
+                      className={cn(
+                        'w-full px-3 py-2 text-sm text-left hover:bg-muted/40 transition-colors flex items-center gap-2',
+                        selectedSubject === subject.name && 'bg-primary/5 text-primary'
+                      )}
+                    >
+                      <BookOpen className="size-3.5 text-muted-foreground/40" />
+                      {subject.name}
+                    </button>
+                  ))}
+                  {selectedSubject && (
+                    <button
+                      onClick={() => {
+                        setSelectedSubject(null);
+                        setSubjectOpen(false);
+                      }}
+                      className="w-full px-3 py-2 text-xs text-muted-foreground/50 hover:text-foreground/70 border-t border-border/30 transition-colors"
+                    >
+                      Clear subject filter
+                    </button>
+                  )}
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+
+          {/* Reset / clear-filters button */}
+          {(selectedPhase || selectedSubject || searchQuery || sortMode !== 'popular') && (
+            <button
+              onClick={() => {
+                setSelectedPhase(null);
+                setSelectedGrade(null);
+                setSelectedSubject(null);
+                setSearchQuery('');
+                setSortMode('popular');
+                onFilterChange?.(null);
+              }}
+              className="shrink-0 h-10 px-4 rounded-xl border border-border/50 bg-card text-sm text-muted-foreground hover:text-foreground hover:border-border transition-all flex items-center gap-1.5"
+              title="Reset all filters"
+            >
+              <svg className="size-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+              Reset
+            </button>
+          )}
         </div>
       </div>
 
-      {/* ═══ Row 3: Subject chips (full width, wrapping) ═══ */}
-      {selectedPhase && (
-        <div className="mb-1">
-          <p className="text-[11px] text-muted-foreground/40 uppercase tracking-wider font-medium mb-2 mt-1">
-            Subjects
-          </p>
-          <div className="flex flex-wrap gap-1.5">
-            <button
-              onClick={() => selectSubject(null as unknown as string)}
-              className={cn(
-                'px-3 py-1 rounded-full text-xs font-medium transition-all border whitespace-nowrap',
-                !selectedSubject
-                  ? 'bg-primary/10 border-primary/30 text-primary'
-                  : 'bg-card border-border/50 text-muted-foreground hover:border-border hover:text-foreground'
-              )}
-            >
-              All
-            </button>
-            {allPhaseSubjects.map((subject) => (
-              <button
-                key={subject.id}
-                onClick={() => selectSubject(subject.name)}
-                className={cn(
-                  'px-3 py-1 rounded-full text-xs font-medium transition-all border whitespace-nowrap',
-                  selectedSubject === subject.name
-                    ? 'bg-primary/10 border-primary/30 text-primary'
-                    : 'bg-card border-border/50 text-muted-foreground hover:border-border hover:text-foreground'
-                )}
-              >
-                {subject.name}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* ═══ Active filter indicator ═══ */}
-      {(selectedPhase || selectedSubject || searchQuery) && (
-        <div className="flex items-center gap-2 mt-2">
-          <span className="text-sm text-muted-foreground/60">
-            {selectedPhase && `Phase: ${selectedPhaseData?.name}`}
-            {selectedGrade != null && ` · Grade ${selectedGrade}`}
-            {selectedSubject && ` · ${selectedSubject}`}
-            {searchQuery && ` · "${searchQuery}"`}
-          </span>
-          <button
-            onClick={() => {
-              setSelectedPhase(null);
-              setSelectedGrade(null);
-              setSelectedSubject(null);
-              setSearchQuery('');
-              setSortMode('popular');
-              onFilterChange?.(null);
-            }}
-            className="text-sm text-primary/70 hover:text-primary font-medium transition-colors"
-          >
-            Clear all
-          </button>
-        </div>
-      )}
     </div>
   );
 }
