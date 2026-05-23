@@ -641,7 +641,7 @@ function HomePage() {
         )}
 
         {/* ── Curriculum browser ── */}
-        <CurriculumBrowser onFilterChange={setCurriculumFilter} />
+        <CurriculumBrowser onFilterChange={setCurriculumFilter} classrooms={classrooms} />
 
         {/* ── Error ── */}
         <AnimatePresence>

@@ -43,8 +43,9 @@ interface FilterState {
   sort?: SortMode;
 }
 
-export function CurriculumBrowser({ onFilterChange }: {
+export function CurriculumBrowser({ onFilterChange, classrooms }: {
   onFilterChange?: (filter: FilterState | null) => void;
+  classrooms?: Array<{ grade?: number; subject?: string }>;
 }) {
   const [phases, setPhases] = useState<Phase[]>([]);
   const [selectedPhase, setSelectedPhase] = useState<string | null>(null);
@@ -97,11 +98,19 @@ export function CurriculumBrowser({ onFilterChange }: {
 
   const selectedPhaseData = phases.find((p) => p.id === selectedPhase);
 
-  // All subjects for the selected phase (across all grades)
-  const allPhaseSubjects = selectedPhaseData
+  // All subjects for the selected phase that actually have courses
+  // Derived from the classrooms prop (actual courses), not curriculum data
+  const allPhaseSubjects = selectedPhase && classrooms
     ? Array.from(
         new Map(
-          selectedPhaseData.subjects.map((s) => [s.name, s])
+          classrooms
+            .filter(c => {
+              // Match grade within this phase's grade range
+              const phaseGrades = selectedPhaseData?.grades.split(',').map(g => parseInt(g.trim(), 10)) || [];
+              return c.grade != null && phaseGrades.includes(c.grade);
+            })
+            .filter(c => c.subject)
+            .map(s => [s.subject, { id: s.subject, name: s.subject! }])
         ).values()
       ).sort((a, b) => a.name.localeCompare(b.name))
     : [];
@@ -221,7 +230,10 @@ export function CurriculumBrowser({ onFilterChange }: {
                 transition={{ duration: 0.12 }}
                 className="absolute top-full mt-1 left-0 right-0 z-50 bg-card border border-border/50 rounded-xl shadow-lg overflow-hidden"
               >
-                {phases.map((phase) => {
+                {[...phases].sort((a, b) => {
+                  const order = ['foundation', 'intermediate', 'senior', 'fet'];
+                  return order.indexOf(a.id) - order.indexOf(b.id);
+                }).map((phase) => {
                   const grades = phase.grades
                     .split(',')
                     .map((g) => parseInt(g.trim(), 10))
