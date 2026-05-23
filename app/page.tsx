@@ -1262,7 +1262,7 @@ function ClassroomCard({
           <Tooltip>
             <TooltipTrigger asChild>
               <p
-                className="font-medium text-[15px] text-foreground/90 min-w-0 cursor-text break-words"
+                className="font-medium text-[15px] line-clamp-2 text-foreground/90 min-w-0 cursor-text"
                 onDoubleClick={startRename}
               >
                 {classroom.name}
