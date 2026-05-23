@@ -693,37 +693,31 @@ function HomePage() {
           transition={{ delay: 0.5 }}
           className="relative z-10 mt-10 w-full max-w-6xl flex flex-col items-center"
         >
-          {/* Trigger — divider-line with centered text */}
-          <div className="group w-full flex items-center gap-4 py-2">
-            <div className="flex-1 h-px bg-border/40 group-hover:bg-border/70 transition-colors" />
-            <div className="shrink-0 flex items-center gap-3 text-[13px] text-muted-foreground/60 select-none">
-              <button
-                onClick={() => persistRecentOpen(!recentOpen)}
-                className="flex items-center gap-2 hover:text-foreground/70 transition-colors cursor-pointer"
+          {/* Course grid header bar */}
+          <div className="w-full flex items-center justify-between gap-4 py-3 border-b border-border/30">
+            <button
+              onClick={() => persistRecentOpen(!recentOpen)}
+              className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+            >
+              <Clock className="size-3.5" />
+              {t('classroom.recentClassrooms')}
+              <span className="text-xs tabular-nums opacity-50">{classrooms.length}</span>
+              <motion.div
+                animate={{ rotate: recentOpen ? 180 : 0 }}
+                transition={{ duration: 0.3, ease: 'easeInOut' }}
               >
-                <Clock className="size-3.5" />
-                {t('classroom.recentClassrooms')}
-                <span className="text-[11px] tabular-nums opacity-60">{classrooms.length}</span>
-                <motion.div
-                  animate={{ rotate: recentOpen ? 180 : 0 }}
-                  transition={{ duration: 0.3, ease: 'easeInOut' }}
-                >
-                  <ChevronDown className="size-3.5" />
-                </motion.div>
-              </button>
+                <ChevronDown className="size-3.5" />
+              </motion.div>
+            </button>
 
-              <button
-                onClick={triggerFileSelect}
-                disabled={importing}
-                className="group/import grid grid-cols-[auto_0fr] hover:grid-cols-[auto_1fr] items-center gap-1 rounded-full px-1.5 py-0.5 text-[12px] text-muted-foreground/35 hover:text-muted-foreground/70 hover:bg-muted/50 transition-all duration-200 cursor-pointer"
-              >
-                <Upload className="size-3" />
-                <span className="overflow-hidden opacity-0 group-hover/import:opacity-100 transition-opacity duration-200 whitespace-nowrap">
-                  {t('import.classroom')}
-                </span>
-              </button>
-            </div>
-            <div className="flex-1 h-px bg-border/40 group-hover:bg-border/70 transition-colors" />
+            <button
+              onClick={triggerFileSelect}
+              disabled={importing}
+              className="flex items-center gap-1.5 text-xs text-muted-foreground/40 hover:text-muted-foreground/80 hover:bg-muted/40 px-2.5 py-1 rounded-full transition-all cursor-pointer"
+            >
+              <Upload className="size-3" />
+              <span>{t('import.classroom')}</span>
+            </button>
           </div>
 
           {/* Expandable content */}
@@ -775,7 +769,7 @@ function HomePage() {
       )}
 
       {/* Footer — flows with content, at the very end */}
-      <div className="mt-auto pt-12 pb-4 text-center text-xs text-muted-foreground/40">
+      <div className="mt-auto pt-12 pb-4 text-center text-sm text-muted-foreground/60">
         OpenMAIC Open Source Project
       </div>
     </div>
