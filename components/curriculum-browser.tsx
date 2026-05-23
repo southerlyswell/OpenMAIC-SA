@@ -132,7 +132,6 @@ export function CurriculumBrowser({ onFilterChange }: {
     setSelectedGrade(grade);
     setSelectedSubject(null);
     setPhaseOpen(false);
-    setTimeout(notifyFilter, 0);
   };
 
   const selectSubject = (subjectName: string) => {
@@ -146,7 +145,7 @@ export function CurriculumBrowser({ onFilterChange }: {
   // Notify on filter changes
   useEffect(() => {
     notifyFilter();
-  }, [selectedSubject, searchQuery, sortMode]);
+  }, [selectedPhase, selectedGrade, selectedSubject, searchQuery, sortMode]);
 
   if (loading) {
     return (
@@ -262,7 +261,6 @@ export function CurriculumBrowser({ onFilterChange }: {
                     setSelectedGrade(null);
                     setSelectedSubject(null);
                     setPhaseOpen(false);
-                    setTimeout(notifyFilter, 0);
                   }}
                   className="w-full px-3 py-2 text-xs text-muted-foreground/50 hover:text-foreground/70 border-t border-border/30 transition-colors"
                 >
