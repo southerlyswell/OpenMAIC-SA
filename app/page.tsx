@@ -1232,16 +1232,7 @@ function ClassroomCard({
       </div>
 
       {/* Info — outside the thumbnail */}
-      <div className="mt-2.5 px-1 flex items-center gap-2">
-        {/* Curriculum badge — shows grade/subject when available */}
-        {(classroom as any).grade > 0 && (
-          <span className="shrink-0 inline-flex items-center rounded-full bg-emerald-100 dark:bg-emerald-900/30 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
-            Gr {(classroom as any).grade} · {(classroom as any).subject || ''}
-          </span>
-        )}
-        <span className="shrink-0 inline-flex items-center rounded-full bg-violet-100 dark:bg-violet-900/30 px-2 py-0.5 text-[11px] font-medium text-violet-600 dark:text-violet-400">
-          {classroom.sceneCount} {t('classroom.slides')} · {formatDate(classroom.updatedAt)}
-        </span>
+      <div className="mt-2.5 px-1">
         {editing ? (
           <div className="flex-1 min-w-0" onClick={(e) => e.stopPropagation()}>
             <input
@@ -1259,35 +1250,41 @@ function ClassroomCard({
             />
           </div>
         ) : (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <p
-                className="font-medium text-[15px] line-clamp-2 text-foreground/90 min-w-0 cursor-text"
-                onDoubleClick={startRename}
-              >
-                {classroom.name}
-              </p>
-            </TooltipTrigger>
-            <TooltipContent
-              side="bottom"
-              sideOffset={4}
-              className="!max-w-[min(90vw,32rem)] break-words whitespace-normal"
-            >
-              <div className="flex items-center gap-1.5">
-                <span className="break-all">{classroom.name}</span>
-                <button
-                  className="shrink-0 p-0.5 rounded hover:bg-foreground/10 transition-colors"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    navigator.clipboard.writeText(classroom.name);
-                    toast.success(t('classroom.nameCopied'));
-                  }}
+          <div className="flex flex-col gap-2">
+            {/* Title first — own line */}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <p
+                  className="font-medium text-[15px] line-clamp-2 text-foreground/90 min-w-0 cursor-text"
+                  onDoubleClick={startRename}
                 >
-                  <Copy className="size-3 opacity-60" />
-                </button>
-              </div>
-            </TooltipContent>
-          </Tooltip>
+                  {classroom.name}
+                </p>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" sideOffset={4} className="!max-w-[min(90vw,32rem)] break-words whitespace-normal">
+                <div className="flex items-center gap-1.5">
+                  <span className="break-all">{classroom.name}</span>
+                  <button
+                    className="shrink-0 p-0.5 rounded hover:bg-foreground/10 transition-colors"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      navigator.clipboard.writeText(classroom.name);
+                      toast.success(t('classroom.nameCopied'));
+                    }}
+                  >
+                    <Copy className="size-3 opacity-60" />
+                  </button>
+                </div>
+              </TooltipContent>
+            </Tooltip>
+
+            {/* Grade/subject badge — own line, no secondary metadata */}
+            {(classroom as any).grade > 0 && (
+              <span className="shrink-0 self-start inline-flex items-center rounded-full bg-emerald-100 dark:bg-emerald-900/30 px-2.5 py-1 text-xs font-medium text-emerald-600 dark:text-emerald-400">
+                Gr {(classroom as any).grade} · {(classroom as any).subject || ''}
+              </span>
+            )}
+          </div>
         )}
       </div>
     </div>
