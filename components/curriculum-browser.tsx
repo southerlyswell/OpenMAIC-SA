@@ -226,7 +226,8 @@ export function CurriculumBrowser({ onFilterChange }: {
                   const grades = phase.grades
                     .split(',')
                     .map((g) => parseInt(g.trim(), 10))
-                    .filter((g) => !isNaN(g));
+                    .filter((g) => !isNaN(g))
+                    .sort((a, b) => a - b);
                   return (
                     <div key={phase.id}>
                       <div className="px-3 py-1.5 text-[11px] font-semibold text-muted-foreground/50 uppercase tracking-wider bg-muted/30">
