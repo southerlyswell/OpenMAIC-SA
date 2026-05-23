@@ -373,7 +373,7 @@ export function CurriculumBrowser({ onFilterChange }: {
       {/* ═══ Active filter indicator ═══ */}
       {(selectedPhase || selectedSubject || searchQuery) && (
         <div className="flex items-center gap-2 mt-2">
-          <span className="text-xs text-muted-foreground/50">
+          <span className="text-sm text-muted-foreground/60">
             {selectedPhase && `Phase: ${selectedPhaseData?.name}`}
             {selectedGrade != null && ` · Grade ${selectedGrade}`}
             {selectedSubject && ` · ${selectedSubject}`}
@@ -388,7 +388,7 @@ export function CurriculumBrowser({ onFilterChange }: {
               setSortMode('popular');
               onFilterChange?.(null);
             }}
-            className="text-[10px] text-muted-foreground/40 hover:text-foreground/70 transition-colors"
+            className="text-sm text-primary/70 hover:text-primary font-medium transition-colors"
           >
             Clear all
           </button>
