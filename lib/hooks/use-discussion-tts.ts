@@ -1,18 +1,29 @@
 'use client';
 
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSettingsStore } from '@/lib/store/settings';
 import { useBrowserTTS } from '@/lib/hooks/use-browser-tts';
 import {
   resolveAgentVoice,
-  getAvailableProvidersWithVoices,
+  resolveNarratorVoiceBinding,
+  getSelectableProvidersWithVoices,
   type ResolvedVoice,
 } from '@/lib/audio/voice-resolver';
-import { getVoxCPMProviderOptions, useVoxCPMVoiceProfiles } from '@/lib/audio/voxcpm-voices';
+import { isTTSProviderEnabled } from '@/lib/audio/provider-enablement';
+import { useAllVoiceProfiles } from '@/lib/audio/voxcpm-voices';
+import { resolveAgentVoiceOptions } from '@/lib/audio/agent-voice';
 import type { AgentConfig } from '@/lib/orchestration/registry/types';
 import type { TTSProviderId } from '@/lib/audio/types';
 import type { AudioIndicatorState } from '@/components/roundtable/audio-indicator';
 import { useI18n } from '@/lib/hooks/use-i18n';
+import { isQwenCloneVoice, resolveTTSModelForVoice } from '@/lib/audio/constants';
+import { toast } from 'sonner';
+import {
+  isVoiceBindingUnavailable,
+  markVoiceBindingNoticeShown,
+  markVoiceBindingUnavailable,
+  trackAssignedVoiceBinding,
+} from '@/lib/audio/unavailable-voice-bindings';
 
 interface DiscussionTTSOptions {
   enabled: boolean;
@@ -28,10 +39,11 @@ interface QueueItem {
   providerId: TTSProviderId;
   modelId?: string;
   voiceId: string;
+  fallbackVoice?: ResolvedVoice;
 }
 
 export function useDiscussionTTS({ enabled, agents, onAudioStateChange }: DiscussionTTSOptions) {
-  const { locale } = useI18n();
+  const { locale, t } = useI18n();
   const ttsProvidersConfig = useSettingsStore((s) => s.ttsProvidersConfig);
   const ttsSpeed = useSettingsStore((s) => s.ttsSpeed);
   const ttsMuted = useSettingsStore((s) => s.ttsMuted);
@@ -40,7 +52,8 @@ export function useDiscussionTTS({ enabled, agents, onAudioStateChange }: Discus
   // Global lecture voice — used as fallback for teacher agent
   const globalTtsProviderId = useSettingsStore((s) => s.ttsProviderId);
   const globalTtsVoice = useSettingsStore((s) => s.ttsVoice);
-  const { profiles: voxcpmProfiles } = useVoxCPMVoiceProfiles();
+  const agentVoiceOverrides = useSettingsStore((s) => s.agentVoiceOverrides);
+  const { profiles: voiceProfiles } = useAllVoiceProfiles();
 
   const queueRef = useRef<QueueItem[]>([]);
   const isPlayingRef = useRef(false);
@@ -53,6 +66,7 @@ export function useDiscussionTTS({ enabled, agents, onAudioStateChange }: Discus
   const onAudioStateChangeRef = useRef(onAudioStateChange);
   onAudioStateChangeRef.current = onAudioStateChange;
   const processQueueRef = useRef<() => void>(() => {});
+  const agentBindingKeysRef = useRef(new Map<string, string>());
 
   const {
     speak: browserSpeak,
@@ -88,41 +102,106 @@ export function useDiscussionTTS({ enabled, agents, onAudioStateChange }: Discus
     agentIndexMap.current = map;
   }, [agents]);
 
+  // Browser-native voices (dynamic, client-only) — same source the AgentBar
+  // picker uses, so discussion resolution and the picker stay in sync.
+  const [browserVoices, setBrowserVoices] = useState<SpeechSynthesisVoice[]>([]);
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.speechSynthesis) return;
+    const load = () => setBrowserVoices(window.speechSynthesis.getVoices());
+    load();
+    window.speechSynthesis.addEventListener('voiceschanged', load);
+    return () => window.speechSynthesis.removeEventListener('voiceschanged', load);
+  }, []);
+
   const resolveVoiceForAgent = useCallback(
-    (agentId: string | null): ResolvedVoice => {
-      const providers = getAvailableProvidersWithVoices(ttsProvidersConfig, voxcpmProfiles);
-      if (!agentId) {
-        if (providers.length > 0) {
-          return {
-            providerId: providers[0].providerId,
-            voiceId: providers[0].voices[0]?.id ?? 'default',
-          };
-        }
-        return { providerId: 'browser-native-tts', voiceId: 'default' };
-      }
-      const agent = agents.find((a) => a.id === agentId);
-      if (!agent) {
-        if (providers.length > 0) {
-          return {
-            providerId: providers[0].providerId,
-            voiceId: providers[0].voices[0]?.id ?? 'default',
-            modelId: undefined,
-          };
-        }
-        return { providerId: 'browser-native-tts', voiceId: 'default', modelId: undefined };
-      }
-      // Teacher: always use global lecture voice (single source of truth with settings)
-      if (agent.role === 'teacher') {
-        return {
+    (agentId: string | null): ResolvedVoice | null => {
+      // ONE selectable-provider list shared with the AgentBar picker: enabled
+      // server/custom providers + opt-in browser-native. Students resolve against
+      // it (fixes the #665 student-silence bug); the teacher uses the global
+      // lecture voice (below).
+      const providers = getSelectableProvidersWithVoices(
+        ttsProvidersConfig,
+        voiceProfiles,
+        browserVoices,
+      );
+      const firstVoice = (): ResolvedVoice | null =>
+        providers.length > 0
+          ? {
+              providerId: providers[0].providerId,
+              voiceId: providers[0].voices[0]?.id ?? 'default',
+            }
+          : null;
+
+      const agent = agentId ? agents.find((a) => a.id === agentId) : undefined;
+      if (!agent) return firstVoice();
+
+      const globalVoice = resolveNarratorVoiceBinding(
+        undefined,
+        {
           providerId: globalTtsProviderId,
           voiceId: globalTtsVoice,
           modelId: ttsProvidersConfig[globalTtsProviderId]?.modelId,
-        };
+        },
+        ttsProvidersConfig,
+      );
+      // Teacher's voice = the global lecture selection, honored VERBATIM (incl.
+      // its model) whenever that provider is enabled — identical to what the
+      // pre-generated lecture sends (use-scene-generator), so lecture and
+      // discussion teacher never diverge. No voiceId re-validation/fallback that
+      // could swap the user's chosen voice. Only if the global provider is itself
+      // disabled does the teacher fall back to an enabled provider.
+      if (agent.role === 'teacher') {
+        const resolved = resolveNarratorVoiceBinding(
+          agent.voiceConfig,
+          {
+            providerId: globalTtsProviderId,
+            voiceId: globalTtsVoice,
+            modelId: ttsProvidersConfig[globalTtsProviderId]?.modelId,
+          },
+          ttsProvidersConfig,
+        );
+        const preferred = isTTSProviderEnabled(
+          resolved.providerId,
+          ttsProvidersConfig[resolved.providerId],
+        )
+          ? resolved
+          : firstVoice();
+        return applyUnavailableBindingFallback(agent.id, preferred, globalVoice, firstVoice);
       }
-      const index = agentIndexMap.current.get(agentId) ?? 0;
-      return resolveAgentVoice(agent, index, providers);
+
+      const index = agentIndexMap.current.get(agentId!) ?? 0;
+      return applyUnavailableBindingFallback(
+        agent.id,
+        resolveAgentVoice(agent, index, providers, agentVoiceOverrides),
+        globalVoice,
+        firstVoice,
+      );
+
+      function applyUnavailableBindingFallback(
+        id: string,
+        preferred: ResolvedVoice | null,
+        fallback: ResolvedVoice,
+        getFirstVoice: () => ResolvedVoice | null,
+      ): ResolvedVoice | null {
+        if (!preferred) return null;
+        const previousKey = agentBindingKeysRef.current.get(id);
+        const key = trackAssignedVoiceBinding(previousKey, preferred);
+        agentBindingKeysRef.current.set(id, key);
+        if (!isVoiceBindingUnavailable(preferred)) return preferred;
+        return isTTSProviderEnabled(fallback.providerId, ttsProvidersConfig[fallback.providerId])
+          ? fallback
+          : getFirstVoice();
+      }
     },
-    [agents, ttsProvidersConfig, voxcpmProfiles, globalTtsProviderId, globalTtsVoice],
+    [
+      agents,
+      ttsProvidersConfig,
+      voiceProfiles,
+      browserVoices,
+      globalTtsProviderId,
+      globalTtsVoice,
+      agentVoiceOverrides,
+    ],
   );
 
   const processQueue = useCallback(async () => {
@@ -153,18 +232,12 @@ export function useDiscussionTTS({ enabled, agents, onAudioStateChange }: Discus
     try {
       const providerConfig = ttsProvidersConfig[item.providerId];
       const agent = item.agentId ? agents.find((a) => a.id === item.agentId) : undefined;
-      const providerOptions =
-        item.providerId === 'voxcpm-tts'
-          ? {
-              ...(providerConfig?.providerOptions || {}),
-              ...(await getVoxCPMProviderOptions(item.voiceId, {
-                agentName: agent?.name,
-                role: agent?.role,
-                persona: agent?.persona,
-                locale,
-              })),
-            }
-          : undefined;
+      const providerOptions = await resolveAgentVoiceOptions(agent, {
+        providerId: item.providerId,
+        providerConfig: { ...providerConfig, modelId: item.modelId || providerConfig?.modelId },
+        voiceId: item.voiceId,
+        language: locale,
+      });
       const res = await fetch('/api/generate/tts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -176,18 +249,22 @@ export function useDiscussionTTS({ enabled, agents, onAudioStateChange }: Discus
           ttsVoice: item.voiceId,
           ttsSpeed: ttsSpeed,
           ttsApiKey: providerConfig?.apiKey,
-          ttsBaseUrl:
-            providerConfig?.serverBaseUrl ||
-            providerConfig?.baseUrl ||
-            providerConfig?.customDefaultBaseUrl,
+          // Managed providers resolve their base URL server-side; only send the
+          // client's own base URL (custom providers).
+          ttsBaseUrl: providerConfig?.baseUrl || providerConfig?.customDefaultBaseUrl,
           ttsProviderOptions: providerOptions,
         }),
         signal: controller.signal,
       });
 
-      if (!res.ok) throw new Error(`TTS API error: ${res.status}`);
-
       const data = await res.json();
+      if (!res.ok) {
+        const error = new Error(
+          typeof data.error === 'string' ? data.error : `TTS API error: ${res.status}`,
+        ) as Error & { errorCode?: string };
+        if (typeof data.errorCode === 'string') error.errorCode = data.errorCode;
+        throw error;
+      }
       if (!data.base64) throw new Error('No audio in response');
 
       const audioUrl = `data:audio/${data.format || 'mp3'};base64,${data.base64}`;
@@ -224,6 +301,28 @@ export function useDiscussionTTS({ enabled, agents, onAudioStateChange }: Discus
       onAudioStateChangeRef.current?.(item.agentId, 'playing');
       await audio.play();
     } catch (err) {
+      const cloneUnavailable =
+        err &&
+        typeof err === 'object' &&
+        (err as { errorCode?: unknown }).errorCode === 'QWEN_VC_VOICE_NOT_FOUND' &&
+        item.agentId &&
+        item.fallbackVoice;
+      if (cloneUnavailable) {
+        const unavailableKey = markVoiceBindingUnavailable({
+          providerId: item.providerId,
+          voiceId: item.voiceId,
+        });
+        if (markVoiceBindingNoticeShown(unavailableKey)) {
+          toast.warning(t('settings.qwenCloneDiscussionUnavailable'));
+        }
+        queueRef.current.unshift({
+          ...item,
+          providerId: item.fallbackVoice!.providerId,
+          modelId: item.fallbackVoice!.modelId,
+          voiceId: item.fallbackVoice!.voiceId,
+          fallbackVoice: undefined,
+        });
+      }
       if ((err as Error).name !== 'AbortError') {
         console.error('[DiscussionTTS] TTS generation failed:', err);
       }
@@ -235,7 +334,17 @@ export function useDiscussionTTS({ enabled, agents, onAudioStateChange }: Discus
         queueMicrotask(() => processQueueRef.current());
       }
     }
-  }, [agents, enabled, locale, ttsMuted, ttsVolume, ttsProvidersConfig, ttsSpeed, playbackSpeed]);
+  }, [
+    agents,
+    enabled,
+    locale,
+    t,
+    ttsMuted,
+    ttsVolume,
+    ttsProvidersConfig,
+    ttsSpeed,
+    playbackSpeed,
+  ]);
 
   processQueueRef.current = processQueue;
 
@@ -243,15 +352,39 @@ export function useDiscussionTTS({ enabled, agents, onAudioStateChange }: Discus
     (messageId: string, partId: string, fullText: string, agentId: string | null) => {
       if (!enabled || ttsMuted || !fullText.trim()) return;
 
-      const { providerId, modelId, voiceId } = resolveVoiceForAgent(agentId);
+      // No enabled provider for this agent ⇒ skip TTS (no silent browser-native).
+      const resolved = resolveVoiceForAgent(agentId);
+      if (!resolved) return;
+      const { providerId, modelId, voiceId } = resolved;
+      const effectiveModelId = resolveTTSModelForVoice(
+        providerId,
+        voiceId,
+        modelId ?? ttsProvidersConfig[providerId]?.modelId,
+      );
+      const fallbackVoice =
+        agentId && providerId === 'qwen-tts' && isQwenCloneVoice(voiceId)
+          ? resolveNarratorVoiceBinding(
+              undefined,
+              {
+                providerId: globalTtsProviderId,
+                voiceId: globalTtsVoice,
+                modelId: ttsProvidersConfig[globalTtsProviderId]?.modelId,
+              },
+              ttsProvidersConfig,
+            )
+          : undefined;
       queueRef.current.push({
         messageId,
         partId,
         text: fullText,
         agentId,
         providerId,
-        modelId,
+        modelId: effectiveModelId,
         voiceId,
+        ...(fallbackVoice &&
+        (fallbackVoice.providerId !== providerId || fallbackVoice.voiceId !== voiceId)
+          ? { fallbackVoice }
+          : {}),
       });
 
       if (!isPlayingRef.current) {
@@ -260,7 +393,14 @@ export function useDiscussionTTS({ enabled, agents, onAudioStateChange }: Discus
         onAudioStateChangeRef.current?.(agentId, 'generating');
       }
     },
-    [enabled, ttsMuted, resolveVoiceForAgent],
+    [
+      enabled,
+      globalTtsProviderId,
+      globalTtsVoice,
+      resolveVoiceForAgent,
+      ttsMuted,
+      ttsProvidersConfig,
+    ],
   );
 
   const cleanup = useCallback(() => {

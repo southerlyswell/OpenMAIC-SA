@@ -31,6 +31,7 @@ import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import { createLogger } from '@/lib/logger';
 import { normalizeASRUploadAudio } from '@/lib/audio/wav-utils';
+import { getASRServerDisabledError } from '@/lib/audio/asr-enablement';
 
 const log = createLogger('ASRSettings');
 
@@ -84,6 +85,15 @@ export function ASRSettings({ selectedProviderId }: ASRSettingsProps) {
       setASRResult('');
       setTestStatus('testing');
       setTestMessage('');
+
+      // Browser-native tests execute wholly in the client and therefore need
+      // the same server force-off guard as the normal recorder path.
+      const serverDisabledError = getASRServerDisabledError(providerConfig);
+      if (serverDisabledError) {
+        setTestStatus('error');
+        setTestMessage(serverDisabledError);
+        return;
+      }
 
       if (selectedProviderId === 'browser-native') {
         const SpeechRecognitionCtor =
@@ -212,8 +222,9 @@ export function ASRSettings({ selectedProviderId }: ASRSettingsProps) {
         </div>
       )}
 
-      {/* API Key & Base URL */}
-      {(requiresApiKey || isServerConfigured || isCustom || isKeylessLocalProvider) && (
+      {/* API Key & Base URL — hidden for managed providers, which are admin-owned
+          and not overridable from the client. */}
+      {!isServerConfigured && (requiresApiKey || isCustom || isKeylessLocalProvider) && (
         <>
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
@@ -226,9 +237,7 @@ export function ASRSettings({ selectedProviderId }: ASRSettingsProps) {
                   autoCapitalize="none"
                   autoCorrect="off"
                   spellCheck={false}
-                  placeholder={
-                    isServerConfigured ? t('settings.optionalOverride') : t('settings.enterApiKey')
-                  }
+                  placeholder={t('settings.enterApiKey')}
                   value={asrProvidersConfig[selectedProviderId]?.apiKey || ''}
                   onChange={(e) =>
                     setASRProviderConfig(selectedProviderId, {
@@ -282,6 +291,7 @@ export function ASRSettings({ selectedProviderId }: ASRSettingsProps) {
             } else {
               switch (selectedProviderId) {
                 case 'openai-whisper':
+                case 'funasr-asr':
                 case 'lemonade-asr':
                   endpointPath = '/audio/transcriptions';
                   break;

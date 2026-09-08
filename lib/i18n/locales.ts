@@ -20,4 +20,10 @@ export const supportedLocales = [
   { code: 'ja-JP', label: '日本語', shortLabel: 'JA' },
   { code: 'ru-RU', label: 'Русский', shortLabel: 'RU' },
   { code: 'ar-SA', label: 'العربية', shortLabel: 'AR' },
+  { code: 'pt-BR', label: 'Português (Brasil)', shortLabel: 'BR' },
+  { code: 'ko-KR', label: '한국어', shortLabel: 'KO' },
+  { code: 'es-MX', label: 'Español (México)', shortLabel: 'ES' },
+  { code: 'fr-FR', label: 'Français', shortLabel: 'FR' },
+  { code: 'vi-VN', label: 'Tiếng Việt', shortLabel: 'VI' },
+  { code: 'de-DE', label: 'Deutsch', shortLabel: 'DE' },
 ] as const satisfies readonly LocaleEntry[];

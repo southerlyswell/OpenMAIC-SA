@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { getProvider } from '@/lib/ai/providers';
 import {
+  getThinkingConfigKey,
   getDefaultThinkingConfig,
   getThinkingDisplayValue,
   normalizeThinkingConfig,
@@ -25,12 +26,27 @@ describe('thinking config metadata', () => {
 
   it('does not expose fixed thinking models as configurable', () => {
     const thinking = getThinking('grok', 'grok-4.20-reasoning');
-    const minimaxThinking = getThinking('minimax', 'MiniMax-M2.7');
+    const minimaxM27Thinking = getThinking('minimax', 'MiniMax-M2.7');
+    const kimiK27CodeThinking = getThinking('kimi', 'kimi-k2.7-code');
+    const kimiK27CodeHighSpeedThinking = getThinking('kimi', 'kimi-k2.7-code-highspeed');
 
     expect(thinking?.control).toBe('none');
     expect(supportsConfigurableThinking(thinking)).toBe(false);
-    expect(minimaxThinking?.control).toBe('none');
-    expect(supportsConfigurableThinking(minimaxThinking)).toBe(false);
+    expect(minimaxM27Thinking?.control).toBe('none');
+    expect(supportsConfigurableThinking(minimaxM27Thinking)).toBe(false);
+    expect(kimiK27CodeThinking?.control).toBe('none');
+    expect(supportsConfigurableThinking(kimiK27CodeThinking)).toBe(false);
+    expect(kimiK27CodeHighSpeedThinking?.control).toBe('none');
+    expect(supportsConfigurableThinking(kimiK27CodeHighSpeedThinking)).toBe(false);
+  });
+
+  it('exposes MiniMax M3 thinking as a toggle through the Anthropic adapter', () => {
+    const thinking = getThinking('minimax', 'MiniMax-M3');
+
+    expect(supportsConfigurableThinking(thinking)).toBe(true);
+    expect(thinking?.control).toBe('toggle');
+    expect(thinking?.requestAdapter).toBe('anthropic');
+    expect(getDefaultThinkingConfig(thinking)).toEqual({ mode: 'disabled' });
   });
 
   it('exposes Claude Haiku 4.5 thinking as budget-only, not effort', () => {
@@ -69,16 +85,38 @@ describe('thinking config metadata', () => {
     expect(glmModels).not.toContain('glm-4.5-air');
     expect(glmModels).not.toContain('glm-4.5-airx');
     expect(glmModels).not.toContain('glm-4.5-flash');
+    expect(googleModels).toEqual(
+      expect.arrayContaining(['gemini-3.6-flash', 'gemini-3.5-flash-lite']),
+    );
     expect(googleModels).toContain('gemini-3.1-pro-preview');
     expect(googleModels).not.toContain('gemini-3-pro-preview');
-    expect(deepseekModels).toEqual(['deepseek-v4-pro', 'deepseek-v4-flash']);
+    expect(deepseekModels).toEqual([
+      'deepseek-v4-pro',
+      'deepseek-v4-flash',
+      'deepseek-v4-flash-vision-exp',
+    ]);
+    // Pin the vision model's capabilities so a regression to vision: false
+    // (silently dropping document images during generation) fails this test.
+    const visionModel = getProvider('deepseek')?.models.find(
+      (m) => m.id === 'deepseek-v4-flash-vision-exp',
+    );
+    expect(visionModel?.capabilities).toMatchObject({
+      streaming: true,
+      tools: true,
+      vision: true,
+    });
     expect(hunyuanModels).toEqual(['hy3-preview']);
-    expect(minimaxModels).toEqual(['MiniMax-M2.7']);
+    expect(minimaxModels).toEqual(['MiniMax-M3', 'MiniMax-M2.7']);
     expect(siliconflowModels).not.toContain('MiniMaxAI/MiniMax-M2');
   });
 });
 
 describe('thinking config normalization', () => {
+  it('shares one settings key between GPT-5.6 Sol and its alias', () => {
+    expect(getThinkingConfigKey('openai', 'gpt-5.6-sol')).toBe('openai:gpt-5.6');
+    expect(getThinkingConfigKey('openai', 'gpt-5.6')).toBe('openai:gpt-5.6');
+  });
+
   it('normalizes OpenAI effort defaults and selected effort values', () => {
     const thinking = getThinking('openai', 'gpt-5.4');
 
@@ -91,6 +129,27 @@ describe('thinking config normalization', () => {
       effort: 'high',
     });
   });
+
+  it.each(['gpt-5.6', 'gpt-5.6-terra', 'gpt-5.6-luna'])(
+    'normalizes %s with medium default and max effort',
+    (modelId) => {
+      const thinking = getThinking('openai', modelId);
+
+      expect(getDefaultThinkingConfig(thinking)).toEqual({
+        mode: 'enabled',
+        effort: 'medium',
+      });
+      expect(normalizeThinkingConfig(thinking, { mode: 'disabled' })).toEqual({
+        mode: 'disabled',
+        effort: 'none',
+      });
+      expect(normalizeThinkingConfig(thinking, { effort: 'max' })).toEqual({
+        mode: 'enabled',
+        effort: 'max',
+      });
+      expect(thinking?.effortValues).toEqual(['none', 'low', 'medium', 'high', 'xhigh', 'max']);
+    },
+  );
 
   it('normalizes GPT-5.5 as non-toggleable effort levels', () => {
     const thinking = getThinking('openai', 'gpt-5.5');
@@ -108,6 +167,7 @@ describe('thinking config normalization', () => {
 
   it('normalizes Claude 4.5+ thinking as effort levels', () => {
     const thinking = getThinking('anthropic', 'claude-sonnet-4-6');
+    const opus48Thinking = getThinking('anthropic', 'claude-opus-4-8');
     const opus47Thinking = getThinking('anthropic', 'claude-opus-4-7');
 
     expect(getDefaultThinkingConfig(thinking)).toEqual({
@@ -122,7 +182,87 @@ describe('thinking config normalization', () => {
       mode: 'disabled',
       effort: 'none',
     });
+    expect(opus48Thinking?.effortValues).toEqual(['none', 'low', 'medium', 'high', 'xhigh', 'max']);
     expect(opus47Thinking?.effortValues).toEqual(['none', 'low', 'medium', 'high', 'xhigh', 'max']);
+  });
+
+  it('models Claude 5 defaults and Fable always-on thinking', () => {
+    const fableThinking = getThinking('anthropic', 'claude-fable-5');
+    const opusThinking = getThinking('anthropic', 'claude-opus-5');
+    const sonnetThinking = getThinking('anthropic', 'claude-sonnet-5');
+
+    expect(getDefaultThinkingConfig(fableThinking)).toEqual({
+      mode: 'enabled',
+      effort: 'high',
+    });
+    expect(normalizeThinkingConfig(fableThinking, { mode: 'disabled' })).toEqual({
+      mode: 'enabled',
+      effort: 'low',
+    });
+    expect(fableThinking).toMatchObject({
+      toggleable: false,
+      budgetAdjustable: false,
+    });
+    expect(getDefaultThinkingConfig(opusThinking)).toEqual({
+      mode: 'enabled',
+      effort: 'high',
+    });
+    expect(getDefaultThinkingConfig(sonnetThinking)).toEqual({
+      mode: 'enabled',
+      effort: 'high',
+    });
+    expect(opusThinking?.effortValues).toEqual(['none', 'low', 'medium', 'high', 'xhigh', 'max']);
+    expect(sonnetThinking?.effortValues).toEqual(['none', 'low', 'medium', 'high', 'xhigh', 'max']);
+  });
+
+  it('models the latest Gemini, Kimi, and Grok reasoning controls', () => {
+    const geminiFlashThinking = getThinking('google', 'gemini-3.6-flash');
+    const geminiLiteThinking = getThinking('google', 'gemini-3.5-flash-lite');
+    const kimiThinking = getThinking('kimi', 'kimi-k3');
+    const grokThinking = getThinking('grok', 'grok-4.5');
+
+    expect(getDefaultThinkingConfig(geminiFlashThinking)).toEqual({
+      mode: 'enabled',
+      level: 'medium',
+    });
+    expect(getDefaultThinkingConfig(geminiLiteThinking)).toEqual({
+      mode: 'enabled',
+      level: 'minimal',
+    });
+    expect(getDefaultThinkingConfig(kimiThinking)).toEqual({
+      mode: 'enabled',
+      effort: 'max',
+    });
+    expect(normalizeThinkingConfig(kimiThinking, { mode: 'disabled' })).toEqual({
+      mode: 'enabled',
+      effort: 'low',
+    });
+    expect(getDefaultThinkingConfig(grokThinking)).toEqual({
+      mode: 'enabled',
+      effort: 'high',
+    });
+  });
+
+  it('models Grok 4.6 thinking as non-toggleable effort including xhigh', () => {
+    const thinking = getThinking('grok', 'grok-4.6');
+
+    expect(supportsConfigurableThinking(thinking)).toBe(true);
+    expect(thinking?.control).toBe('effort');
+    expect(thinking?.requestAdapter).toBe('openai');
+    expect(thinking?.toggleable).toBe(false);
+    expect(thinking?.effortValues).toEqual(['low', 'medium', 'high', 'xhigh']);
+    expect(getDefaultThinkingConfig(thinking)).toEqual({
+      mode: 'enabled',
+      effort: 'high',
+    });
+    expect(normalizeThinkingConfig(thinking, { mode: 'disabled' })).toEqual({
+      mode: 'enabled',
+      effort: 'low',
+    });
+    expect(normalizeThinkingConfig(thinking, { effort: 'xhigh' })).toEqual({
+      mode: 'enabled',
+      effort: 'xhigh',
+    });
   });
 
   it('normalizes DeepSeek V4 thinking as high/max effort levels', () => {
@@ -135,6 +275,35 @@ describe('thinking config normalization', () => {
     expect(normalizeThinkingConfig(thinking, { effort: 'max' })).toEqual({
       mode: 'enabled',
       effort: 'max',
+    });
+  });
+
+  it('normalizes GLM-5.2 thinking as official reasoning effort levels', () => {
+    const thinking = getThinking('glm', 'glm-5.2');
+
+    expect(supportsConfigurableThinking(thinking)).toBe(true);
+    expect(thinking?.control).toBe('effort');
+    expect(thinking?.requestAdapter).toBe('glm');
+    expect(thinking?.effortValues).toEqual([
+      'none',
+      'minimal',
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+      'max',
+    ]);
+    expect(getDefaultThinkingConfig(thinking)).toEqual({
+      mode: 'enabled',
+      effort: 'max',
+    });
+    expect(normalizeThinkingConfig(thinking, { mode: 'disabled' })).toEqual({
+      mode: 'disabled',
+      effort: 'none',
+    });
+    expect(normalizeThinkingConfig(thinking, { effort: 'minimal' })).toEqual({
+      mode: 'enabled',
+      effort: 'minimal',
     });
   });
 
@@ -169,6 +338,9 @@ describe('thinking config normalization', () => {
 
   it('normalizes Doubao Seed 2.0 thinking as reasoning effort levels', () => {
     const thinking = getThinking('doubao', 'doubao-seed-2-0-pro-260215');
+    const seed21Thinking = getThinking('doubao', 'doubao-seed-2-1-pro-260628');
+    const seed21TurboThinking = getThinking('doubao', 'doubao-seed-2-1-turbo-260628');
+    const evolvingThinking = getThinking('doubao', 'doubao-seed-evolving');
 
     expect(getDefaultThinkingConfig(thinking)).toEqual({
       mode: 'enabled',
@@ -179,6 +351,21 @@ describe('thinking config normalization', () => {
       effort: 'high',
     });
     expect(thinking?.effortValues).toEqual(['minimal', 'low', 'medium', 'high']);
+    expect(seed21Thinking?.effortValues).toEqual(['minimal', 'low', 'medium', 'high']);
+    expect(seed21TurboThinking?.effortValues).toEqual(['minimal', 'low', 'medium', 'high']);
+    expect(evolvingThinking?.effortValues).toEqual(['minimal', 'low', 'medium', 'high']);
+  });
+
+  it('normalizes Doubao Seed Character thinking as a mode toggle', () => {
+    const thinking = getThinking('doubao', 'doubao-seed-character-260628');
+
+    expect(getDefaultThinkingConfig(thinking)).toEqual({
+      mode: 'enabled',
+    });
+    expect(normalizeThinkingConfig(thinking, { mode: 'disabled' })).toEqual({
+      mode: 'disabled',
+    });
+    expect(thinking?.control).toBe('toggle');
   });
 
   it('preserves dynamic Gemini budgets and display labels', () => {

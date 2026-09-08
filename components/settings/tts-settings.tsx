@@ -5,6 +5,7 @@ import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
+import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   Select,
@@ -25,7 +26,14 @@ import {
 } from '@/components/ui/alert-dialog';
 import { useI18n } from '@/lib/hooks/use-i18n';
 import { useSettingsStore } from '@/lib/store/settings';
-import { TTS_PROVIDERS, DEFAULT_TTS_VOICES } from '@/lib/audio/constants';
+import {
+  TTS_PROVIDERS,
+  DEFAULT_TTS_VOICES,
+  isQwenCloneVoice,
+  QWEN_TTS_VOICE_CLONE_MODEL,
+  resolveTTSModelForVoice,
+  getManuallySelectableTTSModels,
+} from '@/lib/audio/constants';
 import type { TTSProviderId } from '@/lib/audio/types';
 import {
   Volume2,
@@ -48,13 +56,17 @@ import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import { createLogger } from '@/lib/logger';
 import { useTTSPreview } from '@/lib/audio/use-tts-preview';
+import { isTTSProviderConfigured, isTTSProviderEnabled } from '@/lib/audio/provider-enablement';
 import { isCustomTTSProvider } from '@/lib/audio/types';
 import {
   getVoxCPMProviderOptions,
+  normalizeQwenReferenceAudio,
+  preserveRecordedVoiceName,
   normalizeVoxCPMReferenceAudio,
   validateVoxCPMReferenceAudio,
   VOXCPM_REFERENCE_AUDIO_MAX_SECONDS,
   useVoxCPMVoiceProfiles,
+  useQwenVoiceProfiles,
 } from '@/lib/audio/voxcpm-voices';
 import {
   VOXCPM_BACKENDS,
@@ -78,6 +90,9 @@ export function TTSSettings({ selectedProviderId }: TTSSettingsProps) {
 
   const ttsVoice = useSettingsStore((state) => state.ttsVoice);
   const ttsSpeed = useSettingsStore((state) => state.ttsSpeed);
+  const setTTSSpeed = useSettingsStore((state) => state.setTTSSpeed);
+  const ttsEnabled = useSettingsStore((state) => state.ttsEnabled);
+  const setTTSEnabled = useSettingsStore((state) => state.setTTSEnabled);
   const ttsProvidersConfig = useSettingsStore((state) => state.ttsProvidersConfig);
   const setTTSProviderConfig = useSettingsStore((state) => state.setTTSProviderConfig);
   const activeProviderId = useSettingsStore((state) => state.ttsProviderId);
@@ -86,8 +101,19 @@ export function TTSSettings({ selectedProviderId }: TTSSettingsProps) {
 
   const ttsProvider = TTS_PROVIDERS[selectedProviderId as keyof typeof TTS_PROVIDERS];
   const isCustom = isCustomTTSProvider(selectedProviderId);
+  // Voice-clone models are resolved from the picked voice, never chosen by
+  // hand, so they are hidden from the manual model list.
+  const manuallySelectableModels = getManuallySelectableTTSModels(selectedProviderId);
   const providerConfig = ttsProvidersConfig[selectedProviderId];
   const isServerConfigured = !!providerConfig?.isServerConfigured;
+  // Per-provider enablement (#665): the toggle is meaningful only for an
+  // AVAILABLE provider (configured / server-managed). An unconfigured provider
+  // can't be "enabled" into the picker, so its toggle is disabled. Server
+  // force-disable also locks it. `checked` reflects the true effective state.
+  const providerServerDisabled = !!providerConfig?.serverDisabled;
+  const providerConfigured = isTTSProviderConfigured(selectedProviderId, providerConfig);
+  const providerEnableLocked = providerServerDisabled || !providerConfigured;
+  const providerEnabled = isTTSProviderEnabled(selectedProviderId, providerConfig);
   const isVoxCPM = selectedProviderId === 'voxcpm-tts';
   const voxcpmBackend = normalizeVoxCPMBackend(providerConfig?.providerOptions?.backend);
   const requiresApiKey = isCustom
@@ -104,6 +130,7 @@ export function TTSSettings({ selectedProviderId }: TTSSettingsProps) {
         ? ((providerConfig?.customVoices as Array<{ id: string }> | undefined) || [])[0]?.id ||
           'default'
         : DEFAULT_TTS_VOICES[selectedProviderId as keyof typeof DEFAULT_TTS_VOICES] || 'default';
+  const cloneSpeedDisabled = selectedProviderId === 'qwen-tts' && isQwenCloneVoice(effectiveVoice);
 
   const [showApiKey, setShowApiKey] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -159,13 +186,17 @@ export function TTSSettings({ selectedProviderId }: TTSSettingsProps) {
       await startPreview({
         text: testText,
         providerId: selectedProviderId,
-        modelId:
+        modelId: resolveTTSModelForVoice(
+          selectedProviderId,
+          effectiveVoice,
           ttsProvidersConfig[selectedProviderId]?.modelId || ttsProvider?.defaultModelId || '',
+        ),
         voice: effectiveVoice,
         speed: ttsSpeed,
         apiKey: ttsProvidersConfig[selectedProviderId]?.apiKey,
+        // Managed providers resolve their base URL server-side; only send the
+        // client's own base URL (custom providers).
         baseUrl:
-          ttsProvidersConfig[selectedProviderId]?.serverBaseUrl ||
           ttsProvidersConfig[selectedProviderId]?.baseUrl ||
           providerConfig?.customDefaultBaseUrl ||
           '',
@@ -219,6 +250,48 @@ export function TTSSettings({ selectedProviderId }: TTSSettingsProps) {
 
   return (
     <div className={cn('space-y-6', isVoxCPM ? 'max-w-5xl' : 'max-w-3xl')}>
+      <div className="flex items-center justify-between rounded-lg border border-border/60 bg-background px-3 py-2.5">
+        <div className="min-w-0 pr-3">
+          <p className="text-sm font-medium">{t('settings.enableTTS')}</p>
+          <p className="text-[11px] text-muted-foreground">{t('settings.ttsEnabledDescription')}</p>
+        </div>
+        <Switch
+          checked={ttsEnabled}
+          onCheckedChange={setTTSEnabled}
+          aria-label={t('settings.enableTTS')}
+        />
+      </div>
+
+      {/* Browser-native TTS can't produce managed audio files, so the Pro-mode
+          timeline's per-line audio (preview / regenerate / bulk voiceover) is
+          unavailable on it — surface that when this provider is selected. */}
+      {selectedProviderId === 'browser-native-tts' && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-700 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300">
+          {t('settings.ttsBrowserNativeTimelineNotice')}
+        </div>
+      )}
+
+      {/* Enable / disable this provider for the voice picker and auto-assignment (#665). */}
+      <div className="flex items-center justify-between rounded-lg border border-border/60 bg-background px-3 py-2.5">
+        <div className="min-w-0 pr-3">
+          <p className="text-sm font-medium">{t('settings.ttsProviderEnabledLabel')}</p>
+          <p className="text-[11px] text-muted-foreground">
+            {providerServerDisabled
+              ? t('settings.ttsProviderDisabledByAdmin')
+              : !providerConfigured
+                ? t('settings.ttsProviderUnavailableHint')
+                : t('settings.ttsProviderEnabledHint')}
+          </p>
+        </div>
+        <Switch
+          checked={providerEnabled}
+          disabled={providerEnableLocked}
+          onCheckedChange={(checked) =>
+            setTTSProviderConfig(selectedProviderId, { enabled: checked })
+          }
+        />
+      </div>
+
       {/* Server-configured notice */}
       {isServerConfigured && (
         <div className="rounded-lg border border-blue-200 bg-blue-50 dark:border-blue-800 dark:bg-blue-950/30 p-3 text-sm text-blue-700 dark:text-blue-300">
@@ -226,8 +299,10 @@ export function TTSSettings({ selectedProviderId }: TTSSettingsProps) {
         </div>
       )}
 
-      {/* API Key & Base URL */}
-      {(requiresApiKey || isServerConfigured || isCustom || isVoxCPM || isKeylessLocalProvider) &&
+      {/* API Key & Base URL — hidden for managed providers, which are admin-owned
+          and not overridable from the client. */}
+      {!isServerConfigured &&
+        (requiresApiKey || isCustom || isVoxCPM || isKeylessLocalProvider) &&
         (isVoxCPM ? (
           <div className="rounded-lg border border-border/60 bg-background px-3 py-2.5">
             <div className="flex flex-col gap-2 md:flex-row md:items-end">
@@ -339,11 +414,7 @@ export function TTSSettings({ selectedProviderId }: TTSSettingsProps) {
                         autoCapitalize="none"
                         autoCorrect="off"
                         spellCheck={false}
-                        placeholder={
-                          isServerConfigured
-                            ? t('settings.optionalOverride')
-                            : t('settings.enterApiKey')
-                        }
+                        placeholder={t('settings.enterApiKey')}
                         value={doubaoAppId}
                         onChange={(e) => setDoubaoCompoundKey(e.target.value, doubaoAccessKey)}
                         className="font-mono text-sm pr-10"
@@ -367,11 +438,7 @@ export function TTSSettings({ selectedProviderId }: TTSSettingsProps) {
                         autoCapitalize="none"
                         autoCorrect="off"
                         spellCheck={false}
-                        placeholder={
-                          isServerConfigured
-                            ? t('settings.optionalOverride')
-                            : t('settings.enterApiKey')
-                        }
+                        placeholder={t('settings.enterApiKey')}
                         value={doubaoAccessKey}
                         onChange={(e) => setDoubaoCompoundKey(doubaoAppId, e.target.value)}
                         className="font-mono text-sm pr-10"
@@ -397,11 +464,7 @@ export function TTSSettings({ selectedProviderId }: TTSSettingsProps) {
                       autoCapitalize="none"
                       autoCorrect="off"
                       spellCheck={false}
-                      placeholder={
-                        isServerConfigured
-                          ? t('settings.optionalOverride')
-                          : t('settings.enterApiKey')
-                      }
+                      placeholder={t('settings.enterApiKey')}
                       value={ttsProvidersConfig[selectedProviderId]?.apiKey || ''}
                       onChange={(e) =>
                         setTTSProviderConfig(selectedProviderId, {
@@ -450,6 +513,29 @@ export function TTSSettings({ selectedProviderId }: TTSSettingsProps) {
             )}
           </>
         ))}
+
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <Label className="text-sm">{t('settings.ttsSpeed')}</Label>
+          <span className="text-xs text-muted-foreground">
+            {cloneSpeedDisabled ? '1×' : `${ttsSpeed.toFixed(2)}×`}
+          </span>
+        </div>
+        <input
+          aria-label={t('settings.ttsSpeed')}
+          type="range"
+          min={ttsProvider?.speedRange?.min ?? 0.5}
+          max={ttsProvider?.speedRange?.max ?? 2}
+          step={0.05}
+          value={cloneSpeedDisabled ? 1 : ttsSpeed}
+          disabled={cloneSpeedDisabled}
+          onChange={(event) => setTTSSpeed(Number(event.target.value))}
+          className="w-full disabled:cursor-not-allowed disabled:opacity-50"
+        />
+        {cloneSpeedDisabled && (
+          <p className="text-xs text-muted-foreground">{t('settings.qwenCloneSpeedHint')}</p>
+        )}
+      </div>
 
       {/* Test TTS */}
       <div className="space-y-2">
@@ -502,11 +588,11 @@ export function TTSSettings({ selectedProviderId }: TTSSettingsProps) {
       )}
 
       {/* Available Models */}
-      {ttsProvider?.models?.length > 0 && !isVoxCPM && (
+      {manuallySelectableModels.length > 0 && !isVoxCPM && (
         <div className="space-y-2">
           <Label className="text-sm text-muted-foreground">{t('settings.availableModels')}</Label>
           <div className="flex flex-wrap gap-2">
-            {ttsProvider.models.map((model) => (
+            {manuallySelectableModels.map((model) => (
               <div
                 key={model.id}
                 className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-muted/50 border border-border/40 text-xs font-mono text-muted-foreground"
@@ -523,6 +609,7 @@ export function TTSSettings({ selectedProviderId }: TTSSettingsProps) {
       )}
 
       {selectedProviderId === 'voxcpm-tts' && <VoxCPMVoiceManager />}
+      {selectedProviderId === 'qwen-tts' && <QwenVoiceCloneManager />}
 
       {/* Custom Voice List Management */}
       {isCustom && (
@@ -685,7 +772,11 @@ function VoxCPMVoiceManager() {
 
   const startReferenceRecording = async () => {
     if (isRecordingReference) return;
-    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+    if (
+      typeof navigator === 'undefined' ||
+      typeof MediaRecorder === 'undefined' ||
+      !navigator.mediaDevices?.getUserMedia
+    ) {
       toast.error(t('settings.voxcpmRecordingUnsupported'));
       return;
     }
@@ -780,12 +871,10 @@ function VoxCPMVoiceManager() {
     }
 
     const providerConfig = ttsProvidersConfig[VOXCPM_TTS_PROVIDER_ID];
-    const baseUrl =
-      providerConfig?.serverBaseUrl ||
-      providerConfig?.baseUrl ||
-      providerConfig?.customDefaultBaseUrl ||
-      '';
-    if (!baseUrl.trim()) {
+    // Managed providers resolve their base URL server-side, so only the client's
+    // own base URL is sent; a managed VoxCPM is reachable without a local URL.
+    const baseUrl = providerConfig?.baseUrl || providerConfig?.customDefaultBaseUrl || '';
+    if (!providerConfig?.isServerConfigured && !baseUrl.trim()) {
       toast.error(t('settings.voxcpmBaseUrlRequired'));
       return;
     }
@@ -1102,6 +1191,323 @@ function VoxCPMVoiceManager() {
                 </div>
               </TabsContent>
             </Tabs>
+          </section>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function QwenVoiceCloneManager() {
+  const { t } = useI18n();
+  const { profiles, addCloneVoice, deleteVoice } = useQwenVoiceProfiles();
+  const ttsProviderId = useSettingsStore((state) => state.ttsProviderId);
+  const ttsVoice = useSettingsStore((state) => state.ttsVoice);
+  const ttsSpeed = useSettingsStore((state) => state.ttsSpeed);
+  const ttsProvidersConfig = useSettingsStore((state) => state.ttsProvidersConfig);
+  const setTTSVoice = useSettingsStore((state) => state.setTTSVoice);
+  const setTTSProviderConfig = useSettingsStore((state) => state.setTTSProviderConfig);
+  const { previewing, startPreview, stopPreview } = useTTSPreview();
+  const providerConfig = ttsProvidersConfig['qwen-tts'];
+
+  const [name, setName] = useState('');
+  const [refText, setRefText] = useState('');
+  const [referenceFile, setReferenceFile] = useState<File | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const [previewingVoiceId, setPreviewingVoiceId] = useState<string | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordingChunksRef = useRef<Blob[]>([]);
+  const recordingStreamRef = useRef<MediaStream | null>(null);
+  const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const stopRecordingTimer = () => {
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+  };
+
+  const stopRecordingStream = () => {
+    recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
+    recordingStreamRef.current = null;
+  };
+
+  const normalizeFile = async (file: File): Promise<File> => {
+    const normalized = await normalizeQwenReferenceAudio(file, file.name);
+    return new File([normalized.blob], normalized.name, { type: normalized.mimeType });
+  };
+
+  const handleFileChange = async (file: File | null) => {
+    if (!file) {
+      setReferenceFile(null);
+      return;
+    }
+    try {
+      setReferenceFile(await normalizeFile(file));
+    } catch (error) {
+      setReferenceFile(null);
+      toast.error(error instanceof Error ? error.message : t('settings.qwenCloneSaveFailed'));
+    }
+  };
+
+  const startRecording = async () => {
+    if (isRecording) return;
+    if (
+      typeof navigator === 'undefined' ||
+      typeof MediaRecorder === 'undefined' ||
+      !navigator.mediaDevices?.getUserMedia
+    ) {
+      toast.error(t('settings.qwenCloneUnsupported'));
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : undefined;
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      recordingChunksRef.current = [];
+      recordingStreamRef.current = stream;
+      mediaRecorderRef.current = recorder;
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) recordingChunksRef.current.push(event.data);
+      };
+      recorder.onstop = () => {
+        void (async () => {
+          try {
+            const blob = new Blob(recordingChunksRef.current, {
+              type: recorder.mimeType || 'audio/webm',
+            });
+            if (blob.size > 0) {
+              const file = new File([blob], `qwen-reference-${Date.now()}.webm`, {
+                type: blob.type,
+              });
+              setReferenceFile(await normalizeFile(file));
+              setName((currentName) =>
+                preserveRecordedVoiceName(currentName, t('settings.voxcpmRecordedVoiceName')),
+              );
+            }
+          } catch (error) {
+            toast.error(error instanceof Error ? error.message : t('settings.qwenCloneSaveFailed'));
+          } finally {
+            recordingChunksRef.current = [];
+            setIsRecording(false);
+            setRecordingSeconds(0);
+            stopRecordingTimer();
+            stopRecordingStream();
+          }
+        })();
+      };
+      recorder.start();
+      setIsRecording(true);
+      setRecordingSeconds(0);
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingSeconds((seconds) => {
+          const nextSeconds = seconds + 1;
+          if (nextSeconds >= 58 && mediaRecorderRef.current?.state === 'recording') {
+            mediaRecorderRef.current.stop();
+          }
+          return nextSeconds;
+        });
+      }, 1000);
+    } catch (error) {
+      setIsRecording(false);
+      stopRecordingTimer();
+      stopRecordingStream();
+      toast.error(error instanceof Error ? error.message : t('settings.qwenCloneUnsupported'));
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current?.state === 'recording') mediaRecorderRef.current.stop();
+  };
+
+  useEffect(() => {
+    return () => {
+      stopRecordingTimer();
+      if (mediaRecorderRef.current?.state === 'recording') mediaRecorderRef.current.stop();
+      stopRecordingStream();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!previewing) setPreviewingVoiceId(null);
+  }, [previewing]);
+
+  const handleSave = async () => {
+    if (!name.trim() || !refText.trim() || !referenceFile) return;
+    setSaving(true);
+    try {
+      const voiceId = await addCloneVoice(
+        { name, referenceAudio: referenceFile, refText },
+        {
+          ttsApiKey: providerConfig?.apiKey || undefined,
+          ttsBaseUrl: providerConfig?.baseUrl || providerConfig?.customDefaultBaseUrl || undefined,
+        },
+      );
+      if (ttsProviderId === 'qwen-tts') setTTSVoice(voiceId);
+      setName('');
+      setRefText('');
+      setReferenceFile(null);
+      toast.success(t('settings.qwenCloneSaved'));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t('settings.qwenCloneSaveFailed'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handlePreview = async (voiceId: string) => {
+    if (previewingVoiceId === voiceId) {
+      stopPreview();
+      setPreviewingVoiceId(null);
+      return;
+    }
+    setPreviewingVoiceId(voiceId);
+    try {
+      await startPreview({
+        text: t('settings.ttsTestTextDefault'),
+        providerId: 'qwen-tts',
+        modelId: QWEN_TTS_VOICE_CLONE_MODEL,
+        voice: voiceId,
+        speed: ttsSpeed,
+        apiKey: providerConfig?.apiKey,
+        baseUrl: providerConfig?.baseUrl || providerConfig?.customDefaultBaseUrl,
+      });
+    } catch (error) {
+      setPreviewingVoiceId(null);
+      toast.error(error instanceof Error ? error.message : t('settings.qwenCloneSaveFailed'));
+    }
+  };
+
+  const handleDelete = async (voiceId: string) => {
+    const vendorDeleted = await deleteVoice(voiceId, {
+      ttsApiKey: providerConfig?.apiKey || undefined,
+      ttsBaseUrl: providerConfig?.baseUrl || providerConfig?.customDefaultBaseUrl || undefined,
+    });
+    if (!vendorDeleted) toast.warning(t('settings.qwenCloneDeleteWarning'));
+    if (ttsProviderId === 'qwen-tts' && ttsVoice === voiceId) {
+      setTTSVoice(DEFAULT_TTS_VOICES['qwen-tts']);
+      setTTSProviderConfig('qwen-tts', {
+        modelId: TTS_PROVIDERS['qwen-tts'].defaultModelId,
+      });
+    }
+  };
+
+  const recordingSupported =
+    typeof navigator !== 'undefined' &&
+    typeof MediaRecorder !== 'undefined' &&
+    !!navigator.mediaDevices?.getUserMedia;
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <Label className="text-base font-semibold">{t('settings.qwenCloneVoicesTitle')}</Label>
+        <p className="mt-1 text-xs text-muted-foreground">{t('settings.qwenCloneRefAudioHint')}</p>
+        {!recordingSupported && (
+          <p className="mt-1 text-xs text-amber-600 dark:text-amber-300">
+            {t('settings.qwenCloneUnsupported')}
+          </p>
+        )}
+      </div>
+
+      <div className="overflow-hidden rounded-lg border border-border/70 bg-background">
+        <div className="grid lg:grid-cols-[minmax(280px,0.95fr)_minmax(0,1.15fr)]">
+          <section className="border-b border-border/60 lg:border-b-0 lg:border-r">
+            <div className="flex h-12 items-center justify-between border-b border-border/60 px-4">
+              <span className="text-sm font-medium">{t('settings.voxcpmVoicePool')}</span>
+              <span className="text-xs text-muted-foreground">
+                {t('settings.voxcpmVoiceCount', { count: profiles.length })}
+              </span>
+            </div>
+            <div className="max-h-[360px] overflow-y-auto">
+              {profiles.length ? (
+                profiles.map((profile) => (
+                  <VoiceProfileRow
+                    key={profile.id}
+                    icon={<FileAudio className="h-4 w-4" />}
+                    title={profile.name}
+                    badge={t('settings.voxcpmClone')}
+                    detail={profile.referenceAudioName || profile.id}
+                    kind="clone"
+                    previewing={previewingVoiceId === profile.id}
+                    onPreview={() => handlePreview(profile.id)}
+                    onDelete={() => handleDelete(profile.id)}
+                  />
+                ))
+              ) : (
+                <div className="px-4 py-8 text-center text-sm text-muted-foreground/60">
+                  {t('settings.voxcpmNoCustomVoices')}
+                </div>
+              )}
+            </div>
+          </section>
+
+          <section className="space-y-3 p-4">
+            <Input
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              placeholder={t('settings.voxcpmCloneVoiceNamePlaceholder')}
+              className="h-10 rounded-md text-sm"
+            />
+            <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+              <label className="inline-flex h-10 min-w-0 cursor-pointer items-center justify-center gap-2 rounded-md border border-input bg-background px-3 text-sm hover:bg-accent hover:text-accent-foreground">
+                <Upload className="h-3.5 w-3.5 shrink-0" />
+                <span className="max-w-[240px] truncate">
+                  {referenceFile ? referenceFile.name : t('settings.voxcpmUploadReferenceAudio')}
+                </span>
+                <input
+                  type="file"
+                  accept="audio/*"
+                  className="hidden"
+                  onChange={(event) => {
+                    void handleFileChange(event.target.files?.[0] || null);
+                    event.target.value = '';
+                  }}
+                />
+              </label>
+              <Button
+                type="button"
+                variant={isRecording ? 'destructive' : 'outline'}
+                size="sm"
+                disabled={!recordingSupported}
+                onClick={isRecording ? stopRecording : startRecording}
+                className="h-10 gap-2 rounded-md"
+              >
+                {isRecording ? (
+                  <>
+                    <Square className="h-3.5 w-3.5" />
+                    {formatRecordingTime(recordingSeconds)}
+                  </>
+                ) : (
+                  <>
+                    <Mic className="h-3.5 w-3.5" />
+                    {t('settings.voxcpmRecord')}
+                  </>
+                )}
+              </Button>
+            </div>
+            <Textarea
+              value={refText}
+              onChange={(event) => setRefText(event.target.value)}
+              placeholder={t('settings.qwenCloneRefText')}
+              className="min-h-24 resize-none rounded-md text-sm"
+            />
+            <div className="flex justify-end">
+              <Button
+                size="sm"
+                onClick={handleSave}
+                disabled={saving || !name.trim() || !refText.trim() || !referenceFile}
+                className="h-9 gap-1.5 rounded-md"
+              >
+                {saving ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Plus className="h-3.5 w-3.5" />
+                )}
+                {t('settings.voxcpmAddClone')}
+              </Button>
+            </div>
           </section>
         </div>
       </div>

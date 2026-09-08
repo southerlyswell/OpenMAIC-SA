@@ -5,6 +5,7 @@ import {
   validateModel,
   resolveSelectedModel,
   hasUsableLLMProvider,
+  isLLMProviderConfigured,
   type ProviderCfgLike,
 } from '@/lib/store/settings-validation';
 
@@ -58,6 +59,11 @@ describe('isProviderUsable', () => {
   it('returns false for keyless provider with apiKey but no baseUrl', () => {
     expect(isProviderUsable({ requiresApiKey: false, apiKey: 'some-key' })).toBe(false);
   });
+
+  it('returns false for a server-disabled provider even with a client API key (#665)', () => {
+    expect(isProviderUsable({ apiKey: 'sk-xxx', serverDisabled: true })).toBe(false);
+    expect(isProviderUsable({ isServerConfigured: true, serverDisabled: true })).toBe(false);
+  });
 });
 
 describe('validateProvider', () => {
@@ -86,6 +92,14 @@ describe('validateProvider', () => {
   it('falls back to first usable provider when current is unusable', () => {
     const configMap = {
       'provider-a': cfg(),
+      'provider-b': cfg({ isServerConfigured: true }),
+    };
+    expect(validateProvider('provider-a', configMap, ['provider-b'])).toBe('provider-b');
+  });
+
+  it('re-points away from a server-disabled current provider that has a client key (#665)', () => {
+    const configMap = {
+      'provider-a': cfg({ apiKey: 'sk-xxx', serverDisabled: true }),
       'provider-b': cfg({ isServerConfigured: true }),
     };
     expect(validateProvider('provider-a', configMap, ['provider-b'])).toBe('provider-b');
@@ -182,7 +196,7 @@ describe('hasUsableLLMProvider', () => {
   it('returns true for a server-configured provider without a client key', () => {
     expect(
       hasUsableLLMProvider({
-        openai: { isServerConfigured: true, models: [{ id: 'm1' }], serverBaseUrl: 'https://s' },
+        openai: { isServerConfigured: true, models: [{ id: 'm1' }] },
       }),
     ).toBe(true);
   });
@@ -245,9 +259,32 @@ describe('hasUsableLLMProvider', () => {
           baseUrl: '',
           isServerConfigured: true,
           models: [{ id: 'llama3.3' }],
-          serverBaseUrl: 'http://srv/v1',
         },
       }),
+    ).toBe(true);
+  });
+});
+
+describe('isLLMProviderConfigured', () => {
+  // Regression: a freshly-applied token-plan provider may have no `models`
+  // field yet (probe populates it later). The validator must not throw.
+  it('returns false (not throw) when models is undefined', () => {
+    expect(() =>
+      isLLMProviderConfigured({ apiKey: 'sk-x', baseUrl: 'https://b/v1' } as never),
+    ).not.toThrow();
+    expect(isLLMProviderConfigured({ apiKey: 'sk-x', baseUrl: 'https://b/v1' } as never)).toBe(
+      false,
+    );
+  });
+
+  it('returns true when key + baseUrl + ≥1 model', () => {
+    expect(
+      isLLMProviderConfigured({
+        apiKey: 'sk-x',
+        baseUrl: 'https://b/v1',
+        requiresApiKey: true,
+        models: [{ id: 'm1' }],
+      } as never),
     ).toBe(true);
   });
 });

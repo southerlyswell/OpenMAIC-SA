@@ -26,6 +26,15 @@ export const VIDEO_PROVIDERS: Record<VideoProviderId, VideoProviderConfig> = {
     requiresApiKey: true,
     defaultBaseUrl: 'https://ark.cn-beijing.volces.com',
     models: [
+      { id: 'doubao-seedance-2-0-260128', name: 'Seedance 2.0' },
+      {
+        id: 'doubao-seedance-2-0-fast-260128',
+        name: 'Seedance 2.0 Fast',
+      },
+      {
+        id: 'doubao-seedance-2-0-mini-260615',
+        name: 'Seedance 2.0 Mini',
+      },
       { id: 'doubao-seedance-1-5-pro-251215', name: 'Seedance 1.5 Pro' },
       { id: 'doubao-seedance-1-0-pro-250528', name: 'Seedance 1.0 Pro' },
       {
@@ -72,22 +81,15 @@ export const VIDEO_PROVIDERS: Record<VideoProviderId, VideoProviderConfig> = {
     supportedResolutions: ['720p'],
     maxDuration: 8,
   },
-  sora: {
-    id: 'sora',
-    name: 'Sora',
-    requiresApiKey: true,
-    models: [],
-    supportedAspectRatios: ['16:9', '1:1', '9:16'],
-    maxDuration: 20,
-  },
   'minimax-video': {
     id: 'minimax-video',
     name: 'MiniMax Video',
     requiresApiKey: true,
     defaultBaseUrl: 'https://api.minimaxi.com',
+    // Hailuo 2.3 Fast requires Image-to-Video with first_frame_image; this
+    // provider currently submits Text-to-Video requests only.
     models: [
       { id: 'MiniMax-Hailuo-2.3', name: 'Hailuo 2.3' },
-      { id: 'MiniMax-Hailuo-2.3-Fast', name: 'Hailuo 2.3 Fast' },
       { id: 'MiniMax-Hailuo-02', name: 'Hailuo 02' },
       { id: 'T2V-01-Director', name: 'T2V-01 Director' },
       { id: 'T2V-01', name: 'T2V-01' },

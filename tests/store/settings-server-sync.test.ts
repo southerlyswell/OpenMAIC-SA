@@ -7,6 +7,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
+import { BrowserKVStore } from '@openmaic/storage';
 import { isProviderUsable } from '@/lib/store/settings-validation';
 
 // ---------------------------------------------------------------------------
@@ -137,6 +138,16 @@ vi.mock('@/lib/media/image-providers', () => ({
       requiresApiKey: true,
       models: [{ id: 'qwen-image-max', name: 'Qwen Image Max' }],
     },
+    lemonade: {
+      id: 'lemonade',
+      requiresApiKey: false,
+      models: [{ id: 'Qwen-Image-GGUF', name: 'Qwen Image GGUF' }],
+    },
+    'comfyui-image': {
+      id: 'comfyui-image',
+      requiresApiKey: false,
+      models: [],
+    },
   },
 }));
 
@@ -145,7 +156,7 @@ vi.mock('@/lib/media/video-providers', () => ({
     seedance: {
       id: 'seedance',
       requiresApiKey: true,
-      models: [{ id: 'doubao-seedance-1-5-pro-251215', name: 'Seedance 1.5 Pro' }],
+      models: [{ id: 'doubao-seedance-2-0-260128', name: 'Seedance 2.0' }],
     },
     kling: {
       id: 'kling',
@@ -178,6 +189,25 @@ const localStorageStub = {
 vi.stubGlobal('localStorage', localStorageStub);
 vi.stubGlobal('window', { localStorage: localStorageStub });
 
+// The persisted blob is written through the KVStore's `account` scope, so read
+// it back through the same primitive rather than guessing its key layout. The
+// write is async, hence the poll.
+const persistKv = new BrowserKVStore({ storage: localStorageStub as unknown as Storage });
+// The store reads from the KVStore's `account` scope (namespaced key), and
+// does not migrate the bare `settings-storage` key. Seeding a pre-existing
+// blob therefore writes the namespaced key directly into the shared backing.
+const SETTINGS_KV_KEY = 'maic:account:settings-storage';
+async function readPersistedState(): Promise<Record<string, unknown>> {
+  return await vi.waitFor(async () => {
+    const blob = await persistKv.get<{ state: Record<string, unknown> }>(
+      'settings-storage',
+      'account',
+    );
+    expect(blob).not.toBeNull();
+    return blob!.state;
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -185,12 +215,12 @@ vi.stubGlobal('window', { localStorage: localStorageStub });
 /** Full server response shape */
 interface MockServerResponse {
   providers?: Record<string, { models?: string[]; baseUrl?: string }>;
-  tts?: Record<string, { baseUrl?: string }>;
-  asr?: Record<string, { baseUrl?: string }>;
+  tts?: Record<string, { baseUrl?: string; disabled?: boolean }>;
+  asr?: Record<string, { baseUrl?: string; disabled?: boolean }>;
   pdf?: Record<string, { baseUrl?: string }>;
-  image?: Record<string, { baseUrl?: string }>;
-  video?: Record<string, { baseUrl?: string }>;
-  webSearch?: Record<string, { baseUrl?: string }>;
+  image?: Record<string, { models?: string[]; baseUrl?: string; disabled?: boolean }>;
+  video?: Record<string, { models?: string[]; baseUrl?: string; disabled?: boolean }>;
+  webSearch?: Record<string, { baseUrl?: string; disabled?: boolean }>;
 }
 
 function mockServerResponse(overrides: MockServerResponse = {}) {
@@ -222,12 +252,15 @@ describe('settings rehydrate — built-in provider models', () => {
 
   async function getStore() {
     const { useSettingsStore } = await import('@/lib/store/settings');
+    // persist hydrates asynchronously now that it reads through the KVStore —
+    // await it so the assertions below never race the rehydrate.
+    await useSettingsStore.persist.rehydrate();
     return useSettingsStore;
   }
 
   it('reorders persisted built-in models to registry order while preserving custom models', async () => {
     storage.set(
-      'settings-storage',
+      SETTINGS_KV_KEY,
       JSON.stringify({
         state: {
           providerId: 'openai',
@@ -269,6 +302,77 @@ describe('settings rehydrate — built-in provider models', () => {
     expect(models[0].name).toBe('GPT-4o');
     expect(models[3].name).toBe('Custom Earlier');
   });
+
+  it('strips a legacy serverBaseUrl from persisted provider configs on rehydrate (#620)', async () => {
+    storage.set(
+      SETTINGS_KV_KEY,
+      JSON.stringify({
+        state: {
+          providerId: 'openai',
+          modelId: 'gpt-4o',
+          providersConfig: {
+            openai: {
+              apiKey: '',
+              baseUrl: '',
+              models: [{ id: 'gpt-4o', name: 'GPT-4o' }],
+              name: 'OpenAI',
+              type: 'openai',
+              defaultBaseUrl: 'https://api.openai.com/v1',
+              requiresApiKey: true,
+              isBuiltIn: true,
+              isServerConfigured: true,
+              serverBaseUrl: 'https://internal-gateway.local/v1',
+            },
+          },
+          webSearchProvidersConfig: {
+            bocha: {
+              apiKey: '',
+              baseUrl: '',
+              enabled: true,
+              requiresApiKey: true,
+              isServerConfigured: true,
+              serverBaseUrl: 'https://api.bocha.cn',
+            },
+          },
+        },
+        version: 2,
+      }),
+    );
+
+    const store = await getStore();
+    const openai = store.getState().providersConfig.openai as unknown as Record<string, unknown>;
+    const bocha = store.getState().webSearchProvidersConfig.bocha as unknown as Record<
+      string,
+      unknown
+    >;
+
+    // The removed field must not linger in persisted client state...
+    expect('serverBaseUrl' in openai).toBe(false);
+    expect('serverBaseUrl' in bocha).toBe(false);
+    // ...while the managed flag itself is preserved.
+    expect(openai.isServerConfigured).toBe(true);
+  });
+
+  it('removes the retired insert-toolbar collapse preference on rehydrate', async () => {
+    storage.set(
+      SETTINGS_KV_KEY,
+      JSON.stringify({
+        state: { editInsertToolbarCollapsed: true },
+        version: 4,
+      }),
+    );
+
+    const store = await getStore();
+    expect('editInsertToolbarCollapsed' in store.getState()).toBe(false);
+
+    store.getState().setSidebarCollapsed(false);
+    // Hydration already left a blob in place, so poll on the assertion itself
+    // rather than on a blob merely existing — otherwise this reads the
+    // seeded blob back before the write lands.
+    await vi.waitFor(async () => {
+      expect('editInsertToolbarCollapsed' in (await readPersistedState())).toBe(false);
+    });
+  });
 });
 
 describe('fetchServerProviders — provider availability sync', () => {
@@ -280,6 +384,9 @@ describe('fetchServerProviders — provider availability sync', () => {
 
   async function getStore() {
     const { useSettingsStore } = await import('@/lib/store/settings');
+    // persist hydrates asynchronously now that it reads through the KVStore —
+    // await it so the assertions below never race the rehydrate.
+    await useSettingsStore.persist.rehydrate();
     return useSettingsStore;
   }
 
@@ -316,6 +423,69 @@ describe('fetchServerProviders — provider availability sync', () => {
     expect(models.map((m) => m.id)).toEqual(['gpt-5.5', 'gpt-4o']);
     expect(models[0].name).toBe('gpt-5.5');
     expect(models[1].name).toBe('GPT-4o');
+  });
+
+  it('enriches a managed GPT-5.6 Sol alias with canonical catalog metadata', async () => {
+    const store = await getStore();
+    store.setState({
+      providersConfig: {
+        ...store.getState().providersConfig,
+        openai: {
+          ...store.getState().providersConfig.openai,
+          models: [
+            {
+              id: 'gpt-5.6',
+              name: 'GPT-5.6 Sol',
+              contextWindow: 1050000,
+              outputWindow: 128000,
+              capabilities: {
+                vision: true,
+                thinking: {
+                  requestAdapter: 'openai',
+                  defaultEffort: 'medium',
+                },
+              },
+            },
+          ],
+        },
+      },
+    });
+    mockServerResponse({
+      providers: {
+        openai: { models: ['gpt-5.6-sol'] },
+      },
+    });
+
+    await store.getState().fetchServerProviders();
+
+    const model = store.getState().providersConfig.openai.models[0];
+    expect(model).toMatchObject({
+      id: 'gpt-5.6-sol',
+      name: 'GPT-5.6 Sol',
+      contextWindow: 1050000,
+      outputWindow: 128000,
+      capabilities: {
+        vision: true,
+        thinking: {
+          requestAdapter: 'openai',
+          defaultEffort: 'medium',
+        },
+      },
+    });
+  });
+
+  it('switches a canonical selection to the alias when the managed allowlist only permits it', async () => {
+    const store = await getStore();
+    store.setState({ providerId: 'openai', modelId: 'gpt-5.6' });
+    mockServerResponse({
+      providers: {
+        openai: { models: ['gpt-5.6-sol'] },
+      },
+    });
+
+    await store.getState().fetchServerProviders();
+
+    expect(store.getState().modelId).toBe('gpt-5.6-sol');
   });
 
   it('keeps all models when server provides no model restriction', async () => {
@@ -572,6 +742,9 @@ describe('fetchServerProviders — TTS stale selection', () => {
 
   async function getStore() {
     const { useSettingsStore } = await import('@/lib/store/settings');
+    // persist hydrates asynchronously now that it reads through the KVStore —
+    // await it so the assertions below never race the rehydrate.
+    await useSettingsStore.persist.rehydrate();
     return useSettingsStore;
   }
 
@@ -625,6 +798,9 @@ describe('fetchServerProviders — ASR stale selection', () => {
 
   async function getStore() {
     const { useSettingsStore } = await import('@/lib/store/settings');
+    // persist hydrates asynchronously now that it reads through the KVStore —
+    // await it so the assertions below never race the rehydrate.
+    await useSettingsStore.persist.rehydrate();
     return useSettingsStore;
   }
 
@@ -654,6 +830,20 @@ describe('fetchServerProviders — ASR stale selection', () => {
 
     expect(store.getState().asrProviderId).toBe('openai-whisper');
   });
+
+  it('marks a force-disabled ASR provider and re-points the stale selection', async () => {
+    const store = await getStore();
+    store.setState({ asrProviderId: 'openai-whisper' });
+    mockServerResponse({ asr: { 'openai-whisper': { disabled: true } } });
+
+    await store.getState().fetchServerProviders();
+
+    expect(store.getState().asrProvidersConfig['openai-whisper']).toMatchObject({
+      isServerConfigured: false,
+      serverDisabled: true,
+    });
+    expect(store.getState().asrProviderId).toBe('browser-native');
+  });
 });
 
 describe('fetchServerProviders — Web Search provider sync', () => {
@@ -665,23 +855,26 @@ describe('fetchServerProviders — Web Search provider sync', () => {
 
   async function getStore() {
     const { useSettingsStore } = await import('@/lib/store/settings');
+    // persist hydrates asynchronously now that it reads through the KVStore —
+    // await it so the assertions below never race the rehydrate.
+    await useSettingsStore.persist.rehydrate();
     return useSettingsStore;
   }
 
-  it('marks Bocha as server-configured and stores serverBaseUrl', async () => {
+  it('marks Bocha as server-configured without storing a server base URL', async () => {
     const store = await getStore();
     mockServerResponse({
       webSearch: {
-        bocha: { baseUrl: 'https://api.bocha.cn' },
+        bocha: {},
       },
     });
 
     await store.getState().fetchServerProviders();
 
-    expect(store.getState().webSearchProvidersConfig.bocha).toMatchObject({
-      isServerConfigured: true,
-      serverBaseUrl: 'https://api.bocha.cn',
-    });
+    const bocha = store.getState().webSearchProvidersConfig.bocha;
+    expect(bocha.isServerConfigured).toBe(true);
+    // The server base URL is never exposed to / stored on the client.
+    expect((bocha as Record<string, unknown>).serverBaseUrl).toBeUndefined();
   });
 
   it('falls back to Bocha when selected Tavily loses server config and has no client key', async () => {
@@ -727,6 +920,22 @@ describe('fetchServerProviders — Web Search provider sync', () => {
     expect(store.getState().webSearchProviderId).toBe('bocha');
   });
 
+  it('marks a force-disabled web-search provider and re-points the stale selection', async () => {
+    const store = await getStore();
+    store.setState({ webSearchProviderId: 'tavily' });
+    mockServerResponse({
+      webSearch: { tavily: { disabled: true }, bocha: {} },
+    });
+
+    await store.getState().fetchServerProviders();
+
+    expect(store.getState().webSearchProvidersConfig.tavily).toMatchObject({
+      isServerConfigured: false,
+      serverDisabled: true,
+    });
+    expect(store.getState().webSearchProviderId).toBe('bocha');
+  });
+
   it('stores Baidu sub-source toggles and prevents disabling every source', async () => {
     const store = await getStore();
 
@@ -761,6 +970,9 @@ describe('fetchServerProviders — PDF stale selection', () => {
 
   async function getStore() {
     const { useSettingsStore } = await import('@/lib/store/settings');
+    // persist hydrates asynchronously now that it reads through the KVStore —
+    // await it so the assertions below never race the rehydrate.
+    await useSettingsStore.persist.rehydrate();
     return useSettingsStore;
   }
 
@@ -787,6 +999,9 @@ describe('fetchServerProviders — Image stale selection', () => {
 
   async function getStore() {
     const { useSettingsStore } = await import('@/lib/store/settings');
+    // persist hydrates asynchronously now that it reads through the KVStore —
+    // await it so the assertions below never race the rehydrate.
+    await useSettingsStore.persist.rehydrate();
     return useSettingsStore;
   }
 
@@ -867,6 +1082,20 @@ describe('fetchServerProviders — Image stale selection', () => {
     expect(store.getState().imageModelId).toBe('qwen-image-max');
   });
 
+  it('marks a force-disabled image provider and re-points the stale selection', async () => {
+    const store = await getStore();
+    store.setState({ imageProviderId: 'seedream' });
+    mockServerResponse({ image: { seedream: { disabled: true }, 'qwen-image': {} } });
+
+    await store.getState().fetchServerProviders();
+
+    expect(store.getState().imageProvidersConfig.seedream).toMatchObject({
+      isServerConfigured: false,
+      serverDisabled: true,
+    });
+    expect(store.getState().imageProviderId).toBe('qwen-image');
+  });
+
   it('auto-selects provider and model when server adds image provider after empty state', async () => {
     const store = await getStore();
 
@@ -932,6 +1161,9 @@ describe('fetchServerProviders — Video stale selection', () => {
 
   async function getStore() {
     const { useSettingsStore } = await import('@/lib/store/settings');
+    // persist hydrates asynchronously now that it reads through the KVStore —
+    // await it so the assertions below never race the rehydrate.
+    await useSettingsStore.persist.rehydrate();
     return useSettingsStore;
   }
 
@@ -941,7 +1173,7 @@ describe('fetchServerProviders — Video stale selection', () => {
     mockServerResponse({ video: { seedance: {} } });
     await store.getState().fetchServerProviders();
     store.getState().setVideoProvider('seedance');
-    store.getState().setVideoModelId('doubao-seedance-1-5-pro-251215');
+    store.getState().setVideoModelId('doubao-seedance-2-0-260128');
 
     mockServerResponse({});
     await store.getState().fetchServerProviders();
@@ -981,13 +1213,27 @@ describe('fetchServerProviders — Video stale selection', () => {
     mockServerResponse({ video: { seedance: {}, kling: {} } });
     await store.getState().fetchServerProviders();
     store.getState().setVideoProvider('seedance');
-    store.getState().setVideoModelId('doubao-seedance-1-5-pro-251215');
+    store.getState().setVideoModelId('doubao-seedance-2-0-260128');
 
     mockServerResponse({ video: { kling: {} } });
     await store.getState().fetchServerProviders();
 
     expect(store.getState().videoProviderId).toBe('kling');
     expect(store.getState().videoModelId).toBe('kling-v2-6');
+  });
+
+  it('marks a force-disabled video provider and re-points the stale selection', async () => {
+    const store = await getStore();
+    store.setState({ videoProviderId: 'seedance' });
+    mockServerResponse({ video: { seedance: { disabled: true }, kling: {} } });
+
+    await store.getState().fetchServerProviders();
+
+    expect(store.getState().videoProvidersConfig.seedance).toMatchObject({
+      isServerConfigured: false,
+      serverDisabled: true,
+    });
+    expect(store.getState().videoProviderId).toBe('kling');
   });
 
   it('auto-selects provider and model when server adds video provider after empty state', async () => {
@@ -1005,7 +1251,7 @@ describe('fetchServerProviders — Video stale selection', () => {
     await store.getState().fetchServerProviders();
 
     expect(store.getState().videoProviderId).toBe('seedance');
-    expect(store.getState().videoModelId).toBe('doubao-seedance-1-5-pro-251215');
+    expect(store.getState().videoModelId).toBe('doubao-seedance-2-0-260128');
     // Provider recovered but generation stays off — user enables manually
     expect(store.getState().videoGenerationEnabled).toBe(false);
   });
@@ -1020,6 +1266,9 @@ describe('fetchServerProviders — LLM cross-provider fallback', () => {
 
   async function getStore() {
     const { useSettingsStore } = await import('@/lib/store/settings');
+    // persist hydrates asynchronously now that it reads through the KVStore —
+    // await it so the assertions below never race the rehydrate.
+    await useSettingsStore.persist.rehydrate();
     return useSettingsStore;
   }
 
@@ -1056,6 +1305,9 @@ describe('usable provider ⇒ concrete model invariant (#580)', () => {
 
   async function getStore() {
     const { useSettingsStore } = await import('@/lib/store/settings');
+    // persist hydrates asynchronously now that it reads through the KVStore —
+    // await it so the assertions below never race the rehydrate.
+    await useSettingsStore.persist.rehydrate();
     return useSettingsStore;
   }
 
@@ -1122,6 +1374,26 @@ describe('usable provider ⇒ concrete model invariant (#580)', () => {
 
     expect(store.getState().providerId).toBe('openai');
     expect(store.getState().modelId).toBe('gpt-4o');
+  });
+
+  it('preserves an alias wire ID when provider config contains its canonical model', async () => {
+    const store = await getStore();
+    store.setState({
+      providerId: 'openai',
+      modelId: 'gpt-5.6-sol',
+      providersConfig: {
+        ...store.getState().providersConfig,
+        openai: {
+          ...store.getState().providersConfig.openai,
+          apiKey: 'sk-client',
+          models: [{ id: 'gpt-5.6', name: 'GPT-5.6 Sol' }],
+        },
+      },
+    });
+
+    store.getState().setProviderConfig('openai', { baseUrl: 'https://api.openai.com/v1' });
+
+    expect(store.getState().modelId).toBe('gpt-5.6-sol');
   });
 
   it('configuring a non-active provider does not hijack the current selection', async () => {
@@ -1197,7 +1469,7 @@ describe('usable provider ⇒ concrete model invariant (#580)', () => {
 
     store.getState().setVideoProviderConfig('seedance', { customModels: [] });
 
-    expect(store.getState().videoModelId).toBe('doubao-seedance-1-5-pro-251215');
+    expect(store.getState().videoModelId).toBe('doubao-seedance-2-0-260128');
   });
 
   it('deleting the selected provider (bulk setProvidersConfig) does not keep an invalid selection', async () => {
@@ -1417,6 +1689,9 @@ describe('settings store — outline review preference', () => {
 
   async function getStore() {
     const { useSettingsStore } = await import('@/lib/store/settings');
+    // persist hydrates asynchronously now that it reads through the KVStore —
+    // await it so the assertions below never race the rehydrate.
+    await useSettingsStore.persist.rehydrate();
     return useSettingsStore;
   }
 
@@ -1436,7 +1711,7 @@ describe('settings store — outline review preference', () => {
 
   it('rehydrates older persisted settings without the outline flag to false', async () => {
     storage.set(
-      'settings-storage',
+      SETTINGS_KV_KEY,
       JSON.stringify({
         state: {
           providerId: 'openai',
@@ -1450,5 +1725,272 @@ describe('settings store — outline review preference', () => {
     const store = await getStore();
 
     expect(store.getState().reviewOutlineEnabled).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TTS provider enablement (#665)
+// ---------------------------------------------------------------------------
+
+describe('TTS provider enablement (#665)', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    storage.clear();
+    mockFetch.mockReset();
+  });
+
+  async function getStore() {
+    const { useSettingsStore } = await import('@/lib/store/settings');
+    // persist hydrates asynchronously now that it reads through the KVStore —
+    // await it so the assertions below never race the rehydrate.
+    await useSettingsStore.persist.rehydrate();
+    return useSettingsStore;
+  }
+
+  it('browser-native TTS is OFF by default (fresh install, opt-in)', async () => {
+    const store = await getStore();
+    expect(store.getState().ttsProvidersConfig['browser-native-tts'].enabled).toBe(false);
+  });
+
+  it('TTS master toggle is OFF by default on a fresh install', async () => {
+    const store = await getStore();
+    expect(store.getState().ttsEnabled).toBe(false);
+  });
+
+  it('initializes the keyless FunASR provider on a fresh install', async () => {
+    const store = await getStore();
+    expect(store.getState().asrProvidersConfig['funasr-asr']).toEqual({
+      apiKey: '',
+      baseUrl: '',
+      enabled: false,
+    });
+  });
+
+  it('first server-sync auto-enables TTS when a server provider exists', async () => {
+    mockServerResponse({ tts: { 'openai-tts': {} } });
+    const store = await getStore();
+    expect(store.getState().ttsEnabled).toBe(false);
+    await store.getState().fetchServerProviders();
+    expect(store.getState().ttsEnabled).toBe(true);
+  });
+
+  it('server-sync does NOT auto-enable TTS when no provider is configured', async () => {
+    mockServerResponse({ tts: {} });
+    const store = await getStore();
+    await store.getState().fetchServerProviders();
+    expect(store.getState().ttsEnabled).toBe(false);
+  });
+
+  it('non-browser-native built-ins default enabled:true (configured ⇒ visible)', async () => {
+    const store = await getStore();
+    // azure-tts is in the mocked registry; it must default ON so a configured /
+    // server-managed provider is never hidden by a stale default.
+    expect(store.getState().ttsProvidersConfig['azure-tts'].enabled).toBe(true);
+  });
+
+  it('v3→v4 migration normalizes stale enabled flags (others ON, browser-native OFF)', async () => {
+    storage.set(
+      SETTINGS_KV_KEY,
+      JSON.stringify({
+        version: 3,
+        state: {
+          ttsProvidersConfig: {
+            'openai-tts': { apiKey: '', baseUrl: '', enabled: true },
+            // stale default-false on a configured-capable provider — must flip ON
+            'azure-tts': { apiKey: '', baseUrl: '', enabled: false },
+            // legacy default-true browser-native — must flip OFF
+            'browser-native-tts': { apiKey: '', baseUrl: '', enabled: true },
+          },
+          asrProvidersConfig: {},
+        },
+      }),
+    );
+    const store = await getStore();
+    const cfg = store.getState().ttsProvidersConfig;
+    expect(cfg['azure-tts'].enabled).toBe(true);
+    expect(cfg['browser-native-tts'].enabled).toBe(false);
+  });
+
+  it('server force-disable sets serverDisabled and does NOT mark the provider managed', async () => {
+    mockServerResponse({ tts: { 'openai-tts': { disabled: true } } });
+    const store = await getStore();
+    await store.getState().fetchServerProviders();
+    const cfg = store.getState().ttsProvidersConfig['openai-tts'];
+    expect(cfg.serverDisabled).toBe(true);
+    expect(cfg.isServerConfigured).toBe(false);
+  });
+
+  it('a server-managed (not disabled) provider is marked configured, not disabled', async () => {
+    mockServerResponse({ tts: { 'openai-tts': {} } });
+    const store = await getStore();
+    await store.getState().fetchServerProviders();
+    const cfg = store.getState().ttsProvidersConfig['openai-tts'];
+    expect(cfg.isServerConfigured).toBe(true);
+    expect(cfg.serverDisabled).toBe(false);
+  });
+
+  it('clears serverDisabled when a later sync no longer reports the provider disabled', async () => {
+    const store = await getStore();
+    mockServerResponse({ tts: { 'openai-tts': { disabled: true } } });
+    await store.getState().fetchServerProviders();
+    expect(store.getState().ttsProvidersConfig['openai-tts'].serverDisabled).toBe(true);
+    mockServerResponse({ tts: {} });
+    await store.getState().fetchServerProviders();
+    expect(store.getState().ttsProvidersConfig['openai-tts'].serverDisabled).toBe(false);
+  });
+
+  it('applies server-pinned image models as customModels with replaceBuiltInModels', async () => {
+    const store = await getStore();
+    mockServerResponse({
+      image: { seedream: { models: ['doubao-seedream-5.0-lite'] } },
+    });
+    await store.getState().fetchServerProviders();
+
+    const config = store.getState().imageProvidersConfig.seedream;
+    expect(config.isServerConfigured).toBe(true);
+    expect(config.customModels).toEqual([
+      { id: 'doubao-seedream-5.0-lite', name: 'doubao-seedream-5.0-lite' },
+    ]);
+    expect(config.replaceBuiltInModels).toBe(true);
+  });
+
+  it('applies server-pinned video models as customModels with replaceBuiltInModels', async () => {
+    const store = await getStore();
+    mockServerResponse({
+      video: { seedance: { models: ['doubao-seedance-2-0', 'doubao-seedance-3-0'] } },
+    });
+    await store.getState().fetchServerProviders();
+
+    const config = store.getState().videoProvidersConfig.seedance;
+    expect(config.isServerConfigured).toBe(true);
+    expect(config.customModels).toEqual([
+      { id: 'doubao-seedance-2-0', name: 'doubao-seedance-2-0' },
+      { id: 'doubao-seedance-3-0', name: 'doubao-seedance-3-0' },
+    ]);
+    expect(config.replaceBuiltInModels).toBe(true);
+  });
+
+  it('does not set customModels when server reports no models for image provider', async () => {
+    const store = await getStore();
+    mockServerResponse({
+      image: { seedream: {} },
+    });
+    await store.getState().fetchServerProviders();
+
+    const config = store.getState().imageProvidersConfig.seedream;
+    expect(config.isServerConfigured).toBe(true);
+    expect(config.customModels).toBeUndefined();
+    expect(config.replaceBuiltInModels).toBeUndefined();
+  });
+});
+
+describe('settings media enable flags (#1288)', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    storage.clear();
+    mockFetch.mockReset();
+  });
+
+  async function getStore() {
+    const { useSettingsStore } = await import('@/lib/store/settings');
+    await useSettingsStore.persist.rehydrate();
+    return useSettingsStore;
+  }
+
+  it('turns ttsEnabled on when a hosted TTS provider gets an API key', async () => {
+    const store = await getStore();
+    expect(store.getState().ttsEnabled).toBe(false);
+
+    store.getState().setTTSProviderConfig('openai-tts', { apiKey: 'sk-test' });
+
+    expect(store.getState().ttsEnabled).toBe(true);
+    expect(store.getState().ttsProvidersConfig['openai-tts'].apiKey).toBe('sk-test');
+  });
+
+  it('does not re-enable ttsEnabled when an already-usable provider is edited', async () => {
+    const store = await getStore();
+    store.getState().setTTSProviderConfig('openai-tts', { apiKey: 'sk-test' });
+    expect(store.getState().ttsEnabled).toBe(true);
+
+    store.getState().setTTSEnabled(false);
+    store.getState().setTTSProviderConfig('openai-tts', { apiKey: 'sk-other' });
+
+    expect(store.getState().ttsEnabled).toBe(false);
+  });
+
+  it('does not turn ttsEnabled on for an empty key or for browser-native TTS', async () => {
+    const store = await getStore();
+
+    store.getState().setTTSProviderConfig('openai-tts', { apiKey: '' });
+    expect(store.getState().ttsEnabled).toBe(false);
+
+    store.getState().setTTSProviderConfig('browser-native-tts', { enabled: true });
+    expect(store.getState().ttsEnabled).toBe(false);
+  });
+
+  it('turns imageGenerationEnabled on when an image provider gets an API key', async () => {
+    const store = await getStore();
+    expect(store.getState().imageGenerationEnabled).toBe(false);
+
+    store.getState().setImageProviderConfig('seedream', { apiKey: 'img-key', enabled: true });
+
+    expect(store.getState().imageGenerationEnabled).toBe(true);
+  });
+
+  it('does not turn imageGenerationEnabled on when a disabled provider gets a key', async () => {
+    const store = await getStore();
+    store.getState().setImageProviderConfig('seedream', { enabled: false });
+
+    store.getState().setImageProviderConfig('seedream', { apiKey: 'img-key' });
+
+    expect(store.getState().imageGenerationEnabled).toBe(false);
+    expect(store.getState().imageProvidersConfig.seedream.apiKey).toBe('img-key');
+  });
+
+  it('turns imageGenerationEnabled on when a keyless provider gets a baseUrl', async () => {
+    const store = await getStore();
+    expect(store.getState().imageGenerationEnabled).toBe(false);
+
+    store.getState().setImageProviderConfig('lemonade', {
+      baseUrl: 'http://127.0.0.1:13305/v1',
+      enabled: true,
+    });
+
+    expect(store.getState().imageGenerationEnabled).toBe(true);
+  });
+
+  it('does not turn imageGenerationEnabled on for whitespace-only credentials', async () => {
+    const store = await getStore();
+
+    store.getState().setImageProviderConfig('seedream', { apiKey: '   ', enabled: true });
+    expect(store.getState().imageGenerationEnabled).toBe(false);
+
+    store.getState().setImageProviderConfig('lemonade', { baseUrl: '   ', enabled: true });
+    expect(store.getState().imageGenerationEnabled).toBe(false);
+  });
+
+  it('turns videoGenerationEnabled on when a video provider gets an API key', async () => {
+    const store = await getStore();
+    expect(store.getState().videoGenerationEnabled).toBe(false);
+
+    store.getState().setVideoProviderConfig('seedance', { apiKey: 'vid-key', enabled: true });
+
+    expect(store.getState().videoGenerationEnabled).toBe(true);
+  });
+
+  it('leaves a user-disabled image flag off across later server syncs', async () => {
+    const store = await getStore();
+    mockServerResponse({});
+    await store.getState().fetchServerProviders();
+
+    store.setState({
+      imageProviderId: 'seedream',
+      imageGenerationEnabled: false,
+    });
+
+    mockServerResponse({ image: { seedream: {} } });
+    await store.getState().fetchServerProviders();
+
+    expect(store.getState().imageGenerationEnabled).toBe(false);
   });
 });
