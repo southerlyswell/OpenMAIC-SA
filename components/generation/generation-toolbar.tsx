@@ -852,6 +852,7 @@ function ModelSettingsPopover({
 
   return (
     <Popover
+      modal={false}
       open={popoverOpen}
       onOpenChange={(nextOpen) => {
         setPopoverOpen(nextOpen);

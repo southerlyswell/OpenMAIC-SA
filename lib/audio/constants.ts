@@ -270,6 +270,50 @@ export const TTS_PROVIDERS: Record<BuiltInTTSProviderId, TTSProviderConfig> = {
         gender: 'female',
       },
       { id: 'en-US-GuyNeural', name: 'Guy', language: 'en-US', gender: 'male' },
+      // South African English. Two voices, one of each gender, so a lesson can
+      // give the teacher and a learner audibly different voices. Azure locales
+      // are cloud-only: the on-premise Neural TTS containers publish no -za
+      // locale, so these need the cloud endpoint.
+      {
+        id: 'en-ZA-LeahNeural',
+        name: 'Leah (South African English, female)',
+        language: 'en-ZA',
+        gender: 'female',
+      },
+      {
+        id: 'en-ZA-LukeNeural',
+        name: 'Luke (South African English, male)',
+        language: 'en-ZA',
+        gender: 'male',
+      },
+      // Afrikaans.
+      {
+        id: 'af-ZA-AdriNeural',
+        name: 'Adri (Afrikaans, female)',
+        language: 'af-ZA',
+        gender: 'female',
+      },
+      {
+        id: 'af-ZA-WillemNeural',
+        name: 'Willem (Afrikaans, male)',
+        language: 'af-ZA',
+        gender: 'male',
+      },
+      // isiZulu — the only self-serve African-language TTS available from any
+      // global provider. Everything else covering all eleven official languages
+      // (the CSIR's Qfrency) is quote-only.
+      {
+        id: 'zu-ZA-ThandoNeural',
+        name: 'Thando (isiZulu, female)',
+        language: 'zu-ZA',
+        gender: 'female',
+      },
+      {
+        id: 'zu-ZA-ThembaNeural',
+        name: 'Themba (isiZulu, male)',
+        language: 'zu-ZA',
+        gender: 'male',
+      },
     ],
     supportedFormats: ['mp3', 'wav', 'ogg'],
     speedRange: { min: 0.5, max: 2.0, default: 1.0 },

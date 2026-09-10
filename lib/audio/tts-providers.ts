@@ -651,11 +651,20 @@ async function generateAzureTTS(
 ): Promise<TTSGenerationResult> {
   const baseUrl = config.baseUrl || TTS_PROVIDERS['azure-tts'].defaultBaseUrl;
 
+  // Azure voice names are `<locale>-<Name>Neural` (for example `en-ZA-LeahNeural`
+  // or `sr-Latn-RS-SomeNeural`), so the locale is every segment but the last.
+  // Azure rejects an utterance whose `xml:lang` disagrees with the selected
+  // voice, so deriving the locale here is what lets any non-Chinese voice work;
+  // the previous hard-coded 'zh-CN' confined this provider to the bundled zh-CN
+  // voices and rejected every South African voice with a 400.
+  const voiceSegments = (config.voice ?? '').split('-');
+  const voiceLocale = voiceSegments.length > 1 ? voiceSegments.slice(0, -1).join('-') : 'zh-CN';
+
   // Build SSML
   const rate = config.speed ? `${((config.speed - 1) * 100).toFixed(0)}%` : '0%';
   const ssml = `
-    <speak version='1.0' xml:lang='zh-CN'>
-      <voice xml:lang='zh-CN' name='${config.voice}'>
+    <speak version='1.0' xml:lang='${voiceLocale}'>
+      <voice xml:lang='${voiceLocale}' name='${config.voice}'>
         <prosody rate='${rate}'>${escapeXml(text)}</prosody>
       </voice>
     </speak>
