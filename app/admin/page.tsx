@@ -1,18 +1,31 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { BookOpen, ChevronDown, ChevronRight, GraduationCap, Layers, Pencil, RefreshCw } from 'lucide-react';
+import {
+  BookOpen,
+  ChevronDown,
+  ChevronRight,
+  GraduationCap,
+  Layers,
+  Pencil,
+  Plus,
+  RefreshCw,
+  Trash2,
+} from 'lucide-react';
 import { cn } from '@/lib/utils/cn';
 
 /**
  * CAPS admin area — see dev-library/requirements-admin-interface.md.
  *
  * Purpose: Patrick sees how the CAPS curriculum is organised and can change it
- * himself. Subject → grade → topic → lesson, with CAPS codes shown.
+ * himself. Subject -> grade -> topic -> lesson, with CAPS codes shown. He types
+ * his own CAPS content; this screen invents none.
  *
  * LOCAL TOOL ONLY. Unauthenticated on purpose. The sign-in question is brought
  * to Patrick before anything here is exposed to the internet.
  */
+
+const ALL_GRADES = [8, 9, 10, 11, 12];
 
 interface Lesson {
   id: string;
@@ -45,21 +58,40 @@ interface Totals {
   lessons: number;
 }
 
+type DialogKind = 'new-subject' | 'edit-subject' | 'new-topic' | 'edit-topic' | null;
+
+async function callApi(payload: Record<string, unknown>) {
+  const res = await fetch('/api/admin/curriculum', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const body = await res.json();
+  if (!res.ok || !body.success) {
+    throw new Error(body?.error ?? `Request failed (${res.status})`);
+  }
+  return body;
+}
+
 export default function AdminPage() {
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [totals, setTotals] = useState<Totals>({ subjects: 0, topics: 0, lessons: 0 });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
 
   const [selectedSubjectId, setSelectedSubjectId] = useState<string | null>(null);
   const [selectedGrade, setSelectedGrade] = useState<number | null>(null);
   const [expandedTopicId, setExpandedTopicId] = useState<string | null>(null);
 
-  const [editingTopic, setEditingTopic] = useState<Topic | null>(null);
-  const [editTitle, setEditTitle] = useState('');
-  const [editCapsCode, setEditCapsCode] = useState('');
-  const [saving, setSaving] = useState(false);
+  const [dialog, setDialog] = useState<DialogKind>(null);
+  const [fieldName, setFieldName] = useState('');
+  const [fieldCapsCode, setFieldCapsCode] = useState('');
+  const [fieldGrades, setFieldGrades] = useState<number[]>(ALL_GRADES);
+  const [confirmDelete, setConfirmDelete] = useState<
+    { kind: 'subject' | 'topic'; id: string; label: string; children: number } | null
+  >(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -84,44 +116,98 @@ export default function AdminPage() {
   }, [load]);
 
   const selectedSubject = subjects.find((subject) => subject.id === selectedSubjectId) ?? null;
-
   // Topics belong to the subject as a whole right now; the data shape does not
   // yet split topics by grade. The grade selector is shown because Patrick asked
   // for subject -> grade -> topic, and it becomes meaningful when the real CAPS
   // data carries a grade per topic.
   const visibleTopics = selectedSubject?.topics ?? [];
 
-  function openTopicEditor(topic: Topic) {
-    setEditingTopic(topic);
-    setEditTitle(topic.title);
-    setEditCapsCode(topic.capsCode ?? '');
+  function openNewSubject() {
+    setDialog('new-subject');
+    setFieldName('');
+    setFieldGrades(ALL_GRADES);
   }
 
-  async function saveTopic() {
-    if (!editingTopic) return;
+  function openEditSubject(subject: Subject) {
+    setDialog('edit-subject');
+    setFieldName(subject.name);
+    setFieldGrades(subject.grades.length ? subject.grades : ALL_GRADES);
+  }
+
+  function openNewTopic() {
+    if (!selectedSubject) return;
+    setDialog('new-topic');
+    setFieldName('');
+    setFieldCapsCode('');
+  }
+
+  function openEditTopic(topic: Topic) {
+    setDialog('edit-topic');
+    setFieldName(topic.title);
+    setFieldCapsCode(topic.capsCode ?? '');
+  }
+
+  async function saveDialog() {
     setSaving(true);
+    setError(null);
     setNotice(null);
     try {
-      const res = await fetch('/api/admin/curriculum', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      if (dialog === 'new-subject') {
+        await callApi({ action: 'create-subject', name: fieldName, grades: fieldGrades });
+        setNotice(`Added subject "${fieldName.trim()}".`);
+      } else if (dialog === 'edit-subject' && selectedSubject) {
+        await callApi({
+          action: 'update-subject',
+          subjectId: selectedSubject.id,
+          name: fieldName,
+          grades: fieldGrades,
+        });
+        setNotice(`Saved "${fieldName.trim()}".`);
+      } else if (dialog === 'new-topic' && selectedSubject) {
+        await callApi({
+          action: 'create-topic',
+          subjectId: selectedSubject.id,
+          title: fieldName,
+          capsCode: fieldCapsCode,
+        });
+        setNotice(`Added topic "${fieldName.trim()}".`);
+      } else if (dialog === 'edit-topic' && expandedTopicId) {
+        await callApi({
           action: 'update-topic',
-          topicId: editingTopic.id,
-          title: editTitle,
-          capsCode: editCapsCode,
-        }),
-      });
-      const body = await res.json();
-      if (!res.ok || !body.success) {
-        throw new Error(body?.error ?? `Save failed (${res.status})`);
+          topicId: expandedTopicId,
+          title: fieldName,
+          capsCode: fieldCapsCode,
+        });
+        setNotice(`Saved "${fieldName.trim()}".`);
       }
-      setNotice(`Saved "${body.title}".`);
-      setEditingTopic(null);
+      setDialog(null);
       await load();
     } catch (err) {
-      setNotice(null);
       setError(err instanceof Error ? err.message : 'Could not save');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function runDelete() {
+    if (!confirmDelete) return;
+    setSaving(true);
+    setError(null);
+    setNotice(null);
+    try {
+      if (confirmDelete.kind === 'subject') {
+        await callApi({ action: 'delete-subject', subjectId: confirmDelete.id });
+        setNotice(`Deleted subject "${confirmDelete.label}".`);
+        if (selectedSubjectId === confirmDelete.id) setSelectedSubjectId(null);
+      } else {
+        await callApi({ action: 'delete-topic', topicId: confirmDelete.id });
+        setNotice(`Deleted topic "${confirmDelete.label}".`);
+        if (expandedTopicId === confirmDelete.id) setExpandedTopicId(null);
+      }
+      setConfirmDelete(null);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not delete');
     } finally {
       setSaving(false);
     }
@@ -135,17 +221,27 @@ export default function AdminPage() {
             <div>
               <h1 className="text-2xl font-semibold tracking-tight">CAPS curriculum admin</h1>
               <p className="mt-1 text-sm text-muted-foreground">
-                Local tool. Structure only — no course content. See the requirements document.
+                Local tool. You type the content — this screen invents none of it.
               </p>
             </div>
-            <button
-              type="button"
-              onClick={() => void load()}
-              className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm hover:bg-muted"
-            >
-              <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} />
-              Reload
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void load()}
+                className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm hover:bg-muted"
+              >
+                <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} />
+                Reload
+              </button>
+              <button
+                type="button"
+                onClick={openNewSubject}
+                className="inline-flex items-center gap-2 rounded-md bg-foreground px-3 py-2 text-sm text-background"
+              >
+                <Plus className="h-4 w-4" />
+                New subject
+              </button>
+            </div>
           </div>
 
           <div className="mt-4 flex flex-wrap gap-2 text-sm">
@@ -167,35 +263,66 @@ export default function AdminPage() {
         {loading ? (
           <p className="text-sm text-muted-foreground">Loading curriculum…</p>
         ) : (
-          <div className="grid gap-6 md:grid-cols-[280px_1fr]">
+          <div className="grid gap-6 md:grid-cols-[300px_1fr]">
             {/* Subjects */}
             <nav className="rounded-lg border border-border">
               <div className="border-b border-border px-4 py-3 text-sm font-medium">Subjects</div>
               <ul className="divide-y divide-border">
                 {subjects.map((subject) => (
                   <li key={subject.id}>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSelectedSubjectId(subject.id);
-                        setSelectedGrade(subject.grades[0] ?? null);
-                        setExpandedTopicId(null);
-                      }}
+                    <div
                       className={cn(
-                        'w-full px-4 py-3 text-left text-sm hover:bg-muted',
-                        selectedSubjectId === subject.id && 'bg-muted font-medium',
+                        'flex items-center gap-2 px-3 py-2',
+                        selectedSubjectId === subject.id && 'bg-muted',
                       )}
                     >
-                      <span className="block">{subject.name}</span>
-                      <span className="mt-1 block text-xs text-muted-foreground">
-                        Grades {subject.grades.join(', ')} · {subject.topicCount} topics
-                      </span>
-                    </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedSubjectId(subject.id);
+                          setSelectedGrade(subject.grades[0] ?? null);
+                          setExpandedTopicId(null);
+                        }}
+                        className="flex-1 text-left text-sm"
+                      >
+                        <span className="block">{subject.name}</span>
+                        <span className="mt-1 block text-xs text-muted-foreground">
+                          Grades {subject.grades.join(', ') || '—'} · {subject.topicCount} topics
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        title="Rename this subject"
+                        onClick={() => {
+                          setSelectedSubjectId(subject.id);
+                          openEditSubject(subject);
+                        }}
+                        className="rounded border border-border p-1 hover:bg-background"
+                      >
+                        <Pencil className="h-3 w-3" />
+                      </button>
+                      <button
+                        type="button"
+                        title="Delete this subject"
+                        onClick={() =>
+                          setConfirmDelete({
+                            kind: 'subject',
+                            id: subject.id,
+                            label: subject.name,
+                            children: subject.topicCount,
+                          })
+                        }
+                        className="rounded border border-border p-1 hover:bg-background"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </button>
+                    </div>
                   </li>
                 ))}
                 {subjects.length === 0 && (
                   <li className="px-4 py-3 text-sm text-muted-foreground">
-                    The curriculum file has no subjects.
+                    No subjects yet. Choose <span className="font-medium">New subject</span> to add
+                    your first.
                   </li>
                 )}
               </ul>
@@ -225,6 +352,14 @@ export default function AdminPage() {
                         {grade}
                       </button>
                     ))}
+                    <button
+                      type="button"
+                      onClick={openNewTopic}
+                      className="ml-auto inline-flex items-center gap-1 rounded-md border border-border px-3 py-1.5 text-xs hover:bg-muted"
+                    >
+                      <Plus className="h-3 w-3" />
+                      New topic
+                    </button>
                   </div>
 
                   <div className="px-4 py-3">
@@ -250,18 +385,36 @@ export default function AdminPage() {
                                 <span className="text-sm">{topic.title}</span>
                               </button>
                               <span className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-                                {topic.capsCode ?? 'no CAPS code'}
+                                {topic.capsCode || 'no CAPS code'}
                               </span>
                               <span className="text-xs text-muted-foreground">
                                 {topic.lessonCount} lesson{topic.lessonCount === 1 ? '' : 's'}
                               </span>
                               <button
                                 type="button"
-                                onClick={() => openTopicEditor(topic)}
+                                onClick={() => {
+                                  setExpandedTopicId(topic.id);
+                                  openEditTopic(topic);
+                                }}
                                 className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-xs hover:bg-muted"
                               >
                                 <Pencil className="h-3 w-3" />
                                 Edit
+                              </button>
+                              <button
+                                type="button"
+                                title="Delete this topic"
+                                onClick={() =>
+                                  setConfirmDelete({
+                                    kind: 'topic',
+                                    id: topic.id,
+                                    label: topic.title,
+                                    children: topic.lessonCount,
+                                  })
+                                }
+                                className="rounded border border-border p-1 hover:bg-muted"
+                              >
+                                <Trash2 className="h-3 w-3" />
                               </button>
                             </div>
                             {expanded && (
@@ -288,7 +441,10 @@ export default function AdminPage() {
                         );
                       })}
                       {visibleTopics.length === 0 && (
-                        <li className="text-sm text-muted-foreground">This subject has no topics.</li>
+                        <li className="text-sm text-muted-foreground">
+                          This subject has no topics yet. Choose{' '}
+                          <span className="font-medium">New topic</span> to add one.
+                        </li>
                       )}
                     </ul>
                   </div>
@@ -299,46 +455,119 @@ export default function AdminPage() {
         )}
       </div>
 
-      {/* Topic editor */}
-      {editingTopic && (
+      {/* Create / edit dialog */}
+      {dialog && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
           <div className="w-full max-w-md rounded-lg border border-border bg-background p-5 shadow-lg">
-            <h2 className="text-lg font-semibold">Edit topic</h2>
-            <p className="mt-1 text-xs text-muted-foreground">{editingTopic.id}</p>
+            <h2 className="text-lg font-semibold">
+              {dialog === 'new-subject' && 'New subject'}
+              {dialog === 'edit-subject' && 'Edit subject'}
+              {dialog === 'new-topic' && 'New topic'}
+              {dialog === 'edit-topic' && 'Edit topic'}
+            </h2>
 
             <label className="mt-4 block text-sm">
-              Title
+              {dialog.includes('subject') ? 'Subject name' : 'Topic title'}
               <input
-                value={editTitle}
-                onChange={(event) => setEditTitle(event.target.value)}
+                autoFocus
+                value={fieldName}
+                onChange={(event) => setFieldName(event.target.value)}
                 className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
               />
             </label>
 
-            <label className="mt-4 block text-sm">
-              CAPS code
-              <input
-                value={editCapsCode}
-                onChange={(event) => setEditCapsCode(event.target.value)}
-                className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
-              />
-            </label>
+            {dialog.includes('subject') ? (
+              <fieldset className="mt-4">
+                <legend className="text-sm">Grades this subject covers</legend>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {ALL_GRADES.map((grade) => {
+                    const on = fieldGrades.includes(grade);
+                    return (
+                      <button
+                        key={grade}
+                        type="button"
+                        onClick={() =>
+                          setFieldGrades((current) =>
+                            current.includes(grade)
+                              ? current.filter((value) => value !== grade)
+                              : [...current, grade].sort((a, b) => a - b),
+                          )
+                        }
+                        className={cn(
+                          'rounded-full border border-border px-3 py-1 text-xs',
+                          on && 'bg-foreground text-background',
+                        )}
+                      >
+                        {grade}
+                      </button>
+                    );
+                  })}
+                </div>
+              </fieldset>
+            ) : (
+              <label className="mt-4 block text-sm">
+                CAPS code
+                <input
+                  value={fieldCapsCode}
+                  onChange={(event) => setFieldCapsCode(event.target.value)}
+                  className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+                />
+              </label>
+            )}
 
             <div className="mt-5 flex justify-end gap-2">
               <button
                 type="button"
-                onClick={() => setEditingTopic(null)}
+                onClick={() => setDialog(null)}
                 className="rounded-md border border-border px-3 py-2 text-sm hover:bg-muted"
               >
                 Cancel
               </button>
               <button
                 type="button"
-                onClick={() => void saveTopic()}
-                disabled={saving}
+                onClick={() => void saveDialog()}
+                disabled={saving || !fieldName.trim()}
                 className="rounded-md bg-foreground px-3 py-2 text-sm text-background disabled:opacity-50"
               >
                 {saving ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete confirmation */}
+      {confirmDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-md rounded-lg border border-border bg-background p-5 shadow-lg">
+            <h2 className="text-lg font-semibold">
+              Delete this {confirmDelete.kind}?
+            </h2>
+            <p className="mt-2 text-sm">
+              <span className="font-medium">{confirmDelete.label}</span>
+            </p>
+            <p className="mt-2 text-sm text-muted-foreground">
+              {confirmDelete.children > 0
+                ? `This also deletes ${confirmDelete.children} ${
+                    confirmDelete.kind === 'subject' ? 'topic' : 'lesson'
+                  }${confirmDelete.children === 1 ? '' : 's'} inside it. This cannot be undone.`
+                : 'This cannot be undone.'}
+            </p>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setConfirmDelete(null)}
+                className="rounded-md border border-border px-3 py-2 text-sm hover:bg-muted"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void runDelete()}
+                disabled={saving}
+                className="rounded-md bg-destructive px-3 py-2 text-sm text-white disabled:opacity-50"
+              >
+                {saving ? 'Deleting…' : 'Delete'}
               </button>
             </div>
           </div>
