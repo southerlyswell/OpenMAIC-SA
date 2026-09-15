@@ -63,6 +63,19 @@ function cleanGrades(value: unknown): number[] {
 }
 
 /**
+ * A topic's grade may be absent, which is a real state ("no grade set") rather
+ * than an error — existing topics have no grade and are shown as unfinished.
+ */
+function cleanGrade(value: unknown): number | null {
+  if (value === undefined || value === null || value === '') return null;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 12) {
+    throw new Error(`"${String(value)}" is not a school grade between 1 and 12`);
+  }
+  return parsed;
+}
+
+/**
  * Build an id from a name. Ids are permanent keys, so they are derived once and
  * never regenerated on rename — an id that shifted under a rename would silently
  * orphan anything referring to it later.
@@ -129,12 +142,13 @@ export async function POST(req: NextRequest) {
         }
         const title = cleanText(body.title, 'title', 300);
         const capsCode = body.capsCode === undefined ? '' : cleanText(body.capsCode, 'capsCode', 100);
+        const grade = cleanGrade(body.grade);
         const curriculum = await listCurriculum();
         const subject = curriculum.find((item) => item.id === subjectId);
         const existing = new Set((subject?.topics ?? []).map((topic) => topic.id));
         const id = makeId(title, existing);
-        await createTopic(id, subjectId, title, capsCode);
-        return apiSuccess({ created: 'topic', id, title, capsCode, subjectId });
+        await createTopic(id, subjectId, title, capsCode, grade);
+        return apiSuccess({ created: 'topic', id, title, capsCode, grade, subjectId });
       }
 
       case 'update-topic': {
@@ -144,8 +158,9 @@ export async function POST(req: NextRequest) {
         }
         const title = cleanText(body.title, 'title', 300);
         const capsCode = body.capsCode === undefined ? '' : cleanText(body.capsCode, 'capsCode', 100);
-        await updateTopic(topicId, title, capsCode);
-        return apiSuccess({ updated: 'topic', id: topicId, title, capsCode });
+        const grade = cleanGrade(body.grade);
+        await updateTopic(topicId, title, capsCode, grade);
+        return apiSuccess({ updated: 'topic', id: topicId, title, capsCode, grade });
       }
 
       case 'delete-subject': {

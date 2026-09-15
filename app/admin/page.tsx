@@ -37,6 +37,7 @@ interface Topic {
   id: string;
   title: string;
   capsCode: string | null;
+  grade: number | null;
   sequence: number;
   lessonCount: number;
   lessons: Lesson[];
@@ -89,6 +90,9 @@ export default function AdminPage() {
   const [fieldName, setFieldName] = useState('');
   const [fieldCapsCode, setFieldCapsCode] = useState('');
   const [fieldGrades, setFieldGrades] = useState<number[]>(ALL_GRADES);
+  const [fieldGrade, setFieldGrade] = useState<number>(
+    selectedGrade ?? ALL_GRADES[0] ?? 8,
+  );
   const [confirmDelete, setConfirmDelete] = useState<
     { kind: 'subject' | 'topic'; id: string; label: string; children: number } | null
   >(null);
@@ -116,11 +120,16 @@ export default function AdminPage() {
   }, [load]);
 
   const selectedSubject = subjects.find((subject) => subject.id === selectedSubjectId) ?? null;
-  // Topics belong to the subject as a whole right now; the data shape does not
-  // yet split topics by grade. The grade selector is shown because Patrick asked
-  // for subject -> grade -> topic, and it becomes meaningful when the real CAPS
-  // data carries a grade per topic.
-  const visibleTopics = selectedSubject?.topics ?? [];
+
+  // A topic carries its own grade, so the grade buttons genuinely filter. Topics
+  // with no grade are shown separately as "no grade set" rather than guessed into
+  // a grade — see dev-library/requirements-caps-import.md.
+  const topicsForGrade = selectedSubject
+    ? selectedSubject.topics.filter((topic) => topic.grade === selectedGrade)
+    : [];
+  const topicsWithNoGrade = selectedSubject
+    ? selectedSubject.topics.filter((topic) => topic.grade === null || topic.grade === undefined)
+    : [];
 
   function openNewSubject() {
     setDialog('new-subject');
@@ -139,12 +148,14 @@ export default function AdminPage() {
     setDialog('new-topic');
     setFieldName('');
     setFieldCapsCode('');
+    setFieldGrade(selectedGrade ?? selectedSubject.grades[0] ?? ALL_GRADES[0] ?? 8);
   }
 
   function openEditTopic(topic: Topic) {
     setDialog('edit-topic');
     setFieldName(topic.title);
     setFieldCapsCode(topic.capsCode ?? '');
+    setFieldGrade(topic.grade ?? selectedGrade ?? ALL_GRADES[0] ?? 8);
   }
 
   async function saveDialog() {
@@ -169,14 +180,16 @@ export default function AdminPage() {
           subjectId: selectedSubject.id,
           title: fieldName,
           capsCode: fieldCapsCode,
+          grade: fieldGrade,
         });
-        setNotice(`Added topic "${fieldName.trim()}".`);
+        setNotice(`Added topic "${fieldName.trim()}" for Grade ${fieldGrade}.`);
       } else if (dialog === 'edit-topic' && expandedTopicId) {
         await callApi({
           action: 'update-topic',
           topicId: expandedTopicId,
           title: fieldName,
           capsCode: fieldCapsCode,
+          grade: fieldGrade,
         });
         setNotice(`Saved "${fieldName.trim()}".`);
       }
@@ -367,84 +380,54 @@ export default function AdminPage() {
                       Topics — Grade {selectedGrade ?? '—'}
                     </p>
                     <ul className="space-y-2">
-                      {visibleTopics.map((topic) => {
-                        const expanded = expandedTopicId === topic.id;
-                        return (
-                          <li key={topic.id} className="rounded-md border border-border">
-                            <div className="flex items-center gap-2 px-3 py-2">
-                              <button
-                                type="button"
-                                onClick={() => setExpandedTopicId(expanded ? null : topic.id)}
-                                className="flex flex-1 items-center gap-2 text-left"
-                              >
-                                {expanded ? (
-                                  <ChevronDown className="h-4 w-4 shrink-0" />
-                                ) : (
-                                  <ChevronRight className="h-4 w-4 shrink-0" />
-                                )}
-                                <span className="text-sm">{topic.title}</span>
-                              </button>
-                              <span className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-                                {topic.capsCode || 'no CAPS code'}
-                              </span>
-                              <span className="text-xs text-muted-foreground">
-                                {topic.lessonCount} lesson{topic.lessonCount === 1 ? '' : 's'}
-                              </span>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setExpandedTopicId(topic.id);
-                                  openEditTopic(topic);
-                                }}
-                                className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-xs hover:bg-muted"
-                              >
-                                <Pencil className="h-3 w-3" />
-                                Edit
-                              </button>
-                              <button
-                                type="button"
-                                title="Delete this topic"
-                                onClick={() =>
-                                  setConfirmDelete({
-                                    kind: 'topic',
-                                    id: topic.id,
-                                    label: topic.title,
-                                    children: topic.lessonCount,
-                                  })
-                                }
-                                className="rounded border border-border p-1 hover:bg-muted"
-                              >
-                                <Trash2 className="h-3 w-3" />
-                              </button>
-                            </div>
-                            {expanded && (
-                              <div className="border-t border-border px-9 py-2">
-                                {topic.lessons.length === 0 ? (
-                                  <p className="text-xs text-muted-foreground">
-                                    No lessons attached to this topic yet.
-                                  </p>
-                                ) : (
-                                  <ul className="space-y-1">
-                                    {topic.lessons.map((lesson) => (
-                                      <li key={lesson.id} className="text-sm">
-                                        {lesson.title}
-                                        <span className="ml-2 text-xs text-muted-foreground">
-                                          {lesson.status}
-                                        </span>
-                                      </li>
-                                    ))}
-                                  </ul>
-                                )}
-                              </div>
-                            )}
-                          </li>
-                        );
-                      })}
-                      {visibleTopics.length === 0 && (
+                      <TopicItems
+                        topics={topicsForGrade}
+                        expandedTopicId={expandedTopicId}
+                        onToggle={(id) => setExpandedTopicId(expandedTopicId === id ? null : id)}
+                        onEdit={(topic) => {
+                          setExpandedTopicId(topic.id);
+                          openEditTopic(topic);
+                        }}
+                        onDelete={(topic) =>
+                          setConfirmDelete({
+                            kind: 'topic',
+                            id: topic.id,
+                            label: topic.title,
+                            children: topic.lessonCount,
+                          })
+                        }
+                      />
+                      {topicsForGrade.length === 0 && (
                         <li className="text-sm text-muted-foreground">
-                          This subject has no topics yet. Choose{' '}
+                          No topics for Grade {selectedGrade ?? '—'} yet. Choose{' '}
                           <span className="font-medium">New topic</span> to add one.
                         </li>
+                      )}
+
+                      {topicsWithNoGrade.length > 0 && (
+                        <>
+                          <li className="mt-4 text-xs uppercase tracking-wide text-muted-foreground">
+                            No grade set — {topicsWithNoGrade.length} topic
+                            {topicsWithNoGrade.length === 1 ? '' : 's'} needing a grade
+                          </li>
+                          <TopicItems
+                            topics={topicsWithNoGrade}
+                            expandedTopicId={expandedTopicId}
+                            onToggle={(id) => setExpandedTopicId(expandedTopicId === id ? null : id)}
+                            onEdit={(topic) => {
+                              setExpandedTopicId(topic.id);
+                              openEditTopic(topic);
+                            }}
+                            onDelete={(topic) =>
+                              setConfirmDelete({
+                                kind: 'topic',
+                                id: topic.id,
+                                label: topic.title,
+                                children: topic.lessonCount,
+                              })
+                            }
+                          />
+                        </>
                       )}
                     </ul>
                   </div>
@@ -505,14 +488,32 @@ export default function AdminPage() {
                 </div>
               </fieldset>
             ) : (
-              <label className="mt-4 block text-sm">
-                CAPS code
-                <input
-                  value={fieldCapsCode}
-                  onChange={(event) => setFieldCapsCode(event.target.value)}
-                  className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
-                />
-              </label>
+              <>
+                <label className="mt-4 block text-sm">
+                  CAPS code
+                  <input
+                    value={fieldCapsCode}
+                    onChange={(event) => setFieldCapsCode(event.target.value)}
+                    className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+                  />
+                </label>
+                <label className="mt-4 block text-sm">
+                  Grade
+                  <select
+                    value={fieldGrade}
+                    onChange={(event) => setFieldGrade(Number(event.target.value))}
+                    className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+                  >
+                    {(selectedSubject?.grades?.length ? selectedSubject.grades : ALL_GRADES).map(
+                      (grade) => (
+                        <option key={grade} value={grade}>
+                          Grade {grade}
+                        </option>
+                      ),
+                    )}
+                  </select>
+                </label>
+              </>
             )}
 
             <div className="mt-5 flex justify-end gap-2">
@@ -574,6 +575,85 @@ export default function AdminPage() {
         </div>
       )}
     </div>
+  );
+}
+
+/** One list of topics with expand, edit and delete. Used for graded and ungraded topics. */
+function TopicItems({
+  topics,
+  expandedTopicId,
+  onToggle,
+  onEdit,
+  onDelete,
+}: {
+  topics: Topic[];
+  expandedTopicId: string | null;
+  onToggle: (id: string) => void;
+  onEdit: (topic: Topic) => void;
+  onDelete: (topic: Topic) => void;
+}) {
+  return (
+    <>
+      {topics.map((topic) => {
+        const expanded = expandedTopicId === topic.id;
+        return (
+          <li key={topic.id} className="rounded-md border border-border">
+            <div className="flex items-center gap-2 px-3 py-2">
+              <button
+                type="button"
+                onClick={() => onToggle(topic.id)}
+                className="flex flex-1 items-center gap-2 text-left"
+              >
+                {expanded ? (
+                  <ChevronDown className="h-4 w-4 shrink-0" />
+                ) : (
+                  <ChevronRight className="h-4 w-4 shrink-0" />
+                )}
+                <span className="text-sm">{topic.title}</span>
+              </button>
+              <span className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                {topic.capsCode || 'no CAPS code'}
+              </span>
+              <span className="text-xs text-muted-foreground">
+                {topic.lessonCount} lesson{topic.lessonCount === 1 ? '' : 's'}
+              </span>
+              <button
+                type="button"
+                onClick={() => onEdit(topic)}
+                className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-xs hover:bg-muted"
+              >
+                <Pencil className="h-3 w-3" />
+                Edit
+              </button>
+              <button
+                type="button"
+                title="Delete this topic"
+                onClick={() => onDelete(topic)}
+                className="rounded border border-border p-1 hover:bg-muted"
+              >
+                <Trash2 className="h-3 w-3" />
+              </button>
+            </div>
+            {expanded && (
+              <div className="border-t border-border px-9 py-2">
+                {topic.lessons.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">No lessons attached to this topic yet.</p>
+                ) : (
+                  <ul className="space-y-1">
+                    {topic.lessons.map((lesson) => (
+                      <li key={lesson.id} className="text-sm">
+                        {lesson.title}
+                        <span className="ml-2 text-xs text-muted-foreground">{lesson.status}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+          </li>
+        );
+      })}
+    </>
   );
 }
 

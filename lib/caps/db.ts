@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS caps_topics (
   subject_id TEXT NOT NULL REFERENCES caps_subjects(id) ON DELETE CASCADE,
   title TEXT NOT NULL,
   caps_code TEXT,
+  grade INTEGER,
   sequence INTEGER NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -60,12 +61,32 @@ export interface Queryable {
 // so PGlite is never opened twice against the same directory.
 let databasePromise: Promise<PGlite> | null = null;
 
+/**
+ * Bring an existing database forward. CREATE TABLE IF NOT EXISTS does nothing to
+ * a table that already exists, so a column added after the first run needs its
+ * own statement. Safe to run repeatedly.
+ *
+ * Existing topics get NO grade rather than a guessed one: a topic without a grade
+ * is shown as "no grade set" so the gap is visible, never quietly filed under an
+ * assumed grade. (Decided 2026-09-14.)
+ */
+async function migrate(db: PGlite): Promise<void> {
+  // Add the column first, then anything that depends on it. Doing this the other
+  // way round fails on a database created before the column existed, because the
+  // schema above cannot create an index on a column that is not there yet.
+  await db.query('ALTER TABLE caps_topics ADD COLUMN IF NOT EXISTS grade INTEGER');
+  await db.query(
+    'CREATE INDEX IF NOT EXISTS caps_topics_grade_idx ON caps_topics (subject_id, grade)',
+  );
+}
+
 async function openDatabase(): Promise<PGlite> {
   const db = await PGlite.create(DATA_DIR);
   for (const statement of CAPS_SCHEMA.split(';')) {
     const trimmed = statement.trim();
     if (trimmed) await db.query(trimmed);
   }
+  await migrate(db);
   return db;
 }
 
