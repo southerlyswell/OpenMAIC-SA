@@ -69,7 +69,11 @@ next-env.d.ts
 .worktrees
 
 # generated data
-/data
+# The whole directory is generated, EXCEPT the CAPS curriculum structure, which
+# is hand-edited source of truth for the admin area and must be tracked so
+# Patrick's curriculum edits get version history.
+/data/*
+!/data/curriculum.json
 /logs
 
 # docs

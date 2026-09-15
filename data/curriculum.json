@@ -1,0 +1,51 @@
+{
+  "subjects": [
+    {
+      "id": "placeholder-mathematics",
+      "name": "Mathematics",
+      "grades": [
+        8,
+        9,
+        10,
+        11,
+        12
+      ],
+      "topics": [
+        {
+          "id": "placeholder-maths-numbers",
+          "title": "Placeholder topic — Numbers and operations",
+          "capsCode": "PLACEHOLDER",
+          "sequence": 1,
+          "lessons": []
+        },
+        {
+          "id": "placeholder-maths-algebra",
+          "title": "Placeholder topic — Algebra",
+          "capsCode": "PLACEHOLDER",
+          "sequence": 2,
+          "lessons": []
+        }
+      ]
+    },
+    {
+      "id": "placeholder-language",
+      "name": "Home Language (placeholder)",
+      "grades": [
+        8,
+        9,
+        10,
+        11,
+        12
+      ],
+      "topics": [
+        {
+          "id": "placeholder-language-reading",
+          "title": "Placeholder topic — Reading and viewing",
+          "capsCode": "PLACEHOLDER",
+          "sequence": 1,
+          "lessons": []
+        }
+      ]
+    }
+  ]
+}
